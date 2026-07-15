@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.test-dist/
 
 # next.js
 /.next/
@@ -23,15 +24,33 @@
 # misc
 .DS_Store
 *.pem
+__pycache__/
+*.pyc
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
+
+# generated release artifacts and local model binaries
+*.zip
+/Personal-English-Lab-Portable/
+*.onnx
+voices-*.bin
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+
+# local SQLite application data
+.data/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
 
 # vercel
 .vercel

@@ -1,36 +1,108 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Personal English Lab
 
-## Getting Started
+App ca nhan de tao bai hoc tieng Anh tu transcript YouTube ban tu copy.
 
-First, run the development server:
+## Cach dung voi ChatGPT Plus
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+1. Dan transcript vao app.
+2. Bam **Copy prompt cho ChatGPT**.
+3. Dan prompt sang ChatGPT Plus.
+4. Copy JSON ChatGPT tra ve.
+5. Dan JSON vao app va bam **Hien thi bai hoc**.
+
+## Chay app
+
+Nhan dup file nay de chay ca app va Kokoro TTS:
+
+```text
+Start Personal English Lab.vbs
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Neu muon xem log khi chay, dung file:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+Start Personal English Lab.bat
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Hoac chay thu cong:
 
-## Learn More
+```powershell
+npm.cmd install
+npm.cmd run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Node.js 24 tro len la bat buoc vi tang luu tru SQLite dung `node:sqlite`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Mo:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```text
+http://localhost:3000
+```
 
-## Deploy on Vercel
+## Giong doc Kokoro local
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+App uu tien dung Kokoro ONNX local o:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+http://127.0.0.1:5050/tts
+```
+
+Chay Kokoro server:
+
+```powershell
+npm.cmd run tts:kokoro
+```
+
+Server nay dung model va voice file co san tren may:
+
+```text
+L:\tts_tool\models\kokoro-v1.0.onnx
+L:\tts_tool\models\voices-v1.0.bin
+```
+
+Voice mac dinh:
+
+```text
+af_sarah
+```
+
+Neu Kokoro server chua chay, nut nghe trong app se tu dong fallback ve Web Speech API cua trinh duyet.
+
+## Tuy chon Gemini API Free
+
+Tao API key mien phi tren Google AI Studio, sau do tao file `.env.local`:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-3.5-flash
+```
+
+Sau do co the dung nut **Tao bang Gemini** trong app.
+
+## Kiem tra
+
+```powershell
+npm.cmd test
+npm.cmd run lint
+npm.cmd run build
+npm.cmd run smoke:storage
+```
+
+## SQLite storage (Sprint 1)
+
+Tang SQLite server-side da co API va migration, nhung giao dien hien tai van dung
+localStorage. Sprint nay khong tu dong di chuyen hoac xoa bai hoc cu.
+
+Development mac dinh tao database trong `.data`. Co the chon thu muc ghi duoc:
+
+```env
+PERSONAL_ENGLISH_LAB_DATA_DIR=C:\path\to\writable\data
+```
+
+Khi server dang chay, kiem tra storage:
+
+```text
+GET http://localhost:3000/api/storage/health
+```
+
+Xem `docs/storage-architecture.md` de biet schema, backup va ke hoach migration Sprint 3.

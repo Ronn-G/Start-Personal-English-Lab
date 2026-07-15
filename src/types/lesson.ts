@@ -1,5 +1,6 @@
 export interface VocabularyItem {
   word: string;
+  phonetic?: string;
   definition: string;
   vietnamese: string;
   context?: string;
@@ -25,6 +26,40 @@ export interface QuizQuestion {
   explanation: string;
 }
 
+export interface ShadowingLine {
+  line: string;
+  focus: string;
+  vietnamese: string;
+}
+
+export interface SentenceMiningItem {
+  sentence: string;
+  pattern: string;
+  whyUseful: string;
+  remixPrompt: string;
+}
+
+export interface ReviewPlanItem {
+  day: string;
+  task: string;
+}
+
+export interface AnkiCard {
+  front: string;
+  back: string;
+  hint?: string;
+}
+
+export interface DeepPractice {
+  shadowingPractice: {
+    steps: string[];
+    lines: ShadowingLine[];
+  };
+  sentenceMining: SentenceMiningItem[];
+  reviewPlan: ReviewPlanItem[];
+  ankiCards: AnkiCard[];
+}
+
 export interface Lesson {
   title: string;
   summary: string;
@@ -32,9 +67,23 @@ export interface Lesson {
   idiomsAndSlang: IdiomItem[];
   exampleSentences: ExampleSentence[];
   quiz: QuizQuestion[];
+  deepPractice?: DeepPractice;
 }
 
 export interface GenerateLessonResponse {
   lesson: Lesson;
-  videoId: string;
+  videoId?: string;
+}
+
+export interface PracticeFeedback {
+  score: number;
+  overall: string;
+  strengths: string[];
+  corrections: string[];
+  improvedVersion: string;
+  nextStep: string;
+}
+
+export interface PracticeFeedbackResponse {
+  feedback: PracticeFeedback;
 }

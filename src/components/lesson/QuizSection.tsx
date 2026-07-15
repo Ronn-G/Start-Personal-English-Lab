@@ -96,7 +96,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
         <button
           type="button"
           onClick={resetQuiz}
-          className="mt-8 rounded-2xl bg-primary px-8 py-4 text-base font-extrabold uppercase tracking-wide text-white shadow-[0_4px_0_#CA2851] transition ease-smooth hover:bg-primary-hover active:translate-y-0.5 active:shadow-[0_2px_0_#CA2851]"
+          className="button-depth mt-8 rounded-2xl bg-accent px-8 py-4 text-base font-extrabold uppercase tracking-wide text-accent-foreground transition ease-smooth hover:bg-accent-hover active:translate-y-0.5"
         >
           Làm lại
         </button>
@@ -197,7 +197,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
             <button
               type="button"
               onClick={handleNext}
-              className="w-full rounded-2xl bg-primary px-6 py-4 text-base font-extrabold uppercase tracking-wide text-white shadow-[0_4px_0_#CA2851] transition ease-smooth hover:bg-primary-hover active:translate-y-0.5 active:shadow-[0_2px_0_#CA2851]"
+              className="button-depth w-full rounded-2xl bg-accent px-6 py-4 text-base font-extrabold uppercase tracking-wide text-accent-foreground transition ease-smooth hover:bg-accent-hover active:translate-y-0.5"
             >
               {currentIndex >= questions.length - 1 ? "Xem kết quả" : "Tiếp tục"}
             </button>

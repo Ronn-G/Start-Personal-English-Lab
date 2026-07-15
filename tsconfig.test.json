@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": ".test-dist",
+    "rootDir": "."
+  },
+  "include": [
+    "src/types/lesson.ts",
+    "src/types/node-sqlite.d.ts",
+    "src/server/storage/data-directory.ts",
+    "src/server/storage/database.ts",
+    "src/server/storage/domain.ts",
+    "src/server/storage/errors.ts",
+    "src/server/storage/migrations.ts",
+    "src/server/storage/sqlite-repository.ts",
+    "src/server/storage/validation.ts",
+    "test/**/*.test.ts"
+  ]
+}

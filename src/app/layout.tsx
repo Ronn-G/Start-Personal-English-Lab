@@ -1,18 +1,10 @@
 import type { Metadata } from "next";
-import { Nunito } from "next/font/google";
-import { Analytics } from "@vercel/analytics/next";
 
 import "./globals.css";
 
-const nunito = Nunito({
-  variable: "--font-nunito",
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "600", "700", "800"],
-});
-
 export const metadata: Metadata = {
-  title: "Fluent",
-  description: "Biến mọi video YouTube thành bài học tiếng Anh",
+  title: "Personal English Lab",
+  description: "Tạo bài học tiếng Anh từ transcript YouTube bạn tự dán.",
 };
 
 export default function RootLayout({
@@ -21,11 +13,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="vi" className={`${nunito.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col font-sans">
-        {children}
-        <Analytics />
-      </body>
+    <html lang="vi" className="h-full antialiased" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("personal-english-lab-theme");document.documentElement.dataset.theme=t==="b"||t==="c"?t:"a"}catch(e){}})()`,
+          }}
+        />
+      </head>
+      <body className="flex min-h-full flex-col font-sans">{children}</body>
     </html>
   );
 }

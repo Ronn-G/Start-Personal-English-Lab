@@ -1,0 +1,52 @@
+$ErrorActionPreference = "Stop"
+
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$AppRoot = Join-Path $Root "app"
+$Node = Join-Path $Root "runtime\node.exe"
+$Python = Join-Path $Root "tts\python\python.exe"
+$KokoroServer = Join-Path $Root "tts\kokoro_server.py"
+$Model = Join-Path $Root "tts\models\kokoro-v1.0.onnx"
+$Voices = Join-Path $Root "tts\models\voices-v1.0.bin"
+$AppUrl = "http://localhost:3000"
+$HealthUrl = "http://127.0.0.1:5050/health"
+
+$DataBase = $env:LOCALAPPDATA
+if ([string]::IsNullOrWhiteSpace($DataBase)) {
+    $DataBase = $env:APPDATA
+}
+if ([string]::IsNullOrWhiteSpace($DataBase)) {
+    $DataBase = Join-Path $env:USERPROFILE "AppData\Local"
+}
+$env:PERSONAL_ENGLISH_LAB_DATA_DIR = Join-Path $DataBase "PersonalEnglishLab"
+
+function Test-Url([string] $Url) {
+    try {
+        Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 | Out-Null
+        return $true
+    }
+    catch { return $false }
+}
+
+if (-not (Test-Url $HealthUrl)) {
+    Start-Process -FilePath $Python `
+        -ArgumentList @("`"$KokoroServer`"", "--model", "`"$Model`"", "--voices", "`"$Voices`"") `
+        -WorkingDirectory (Join-Path $Root "tts") `
+        -WindowStyle Hidden
+}
+
+if (-not (Test-Url $AppUrl)) {
+    Start-Process -FilePath $Node `
+        -ArgumentList @("server.js") `
+        -WorkingDirectory $AppRoot `
+        -WindowStyle Hidden
+}
+
+for ($i = 0; $i -lt 30; $i++) {
+    if (Test-Url $AppUrl) {
+        Start-Process $AppUrl
+        exit 0
+    }
+    Start-Sleep -Seconds 1
+}
+
+throw "App khong khoi dong duoc. Hay chay Start Personal English Lab.bat de xem loi."

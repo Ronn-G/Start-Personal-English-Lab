@@ -1,60 +1,358 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import LessonDisplay from "@/components/LessonDisplay";
-import { SAMPLE_LESSON } from "@/lib/sampleLesson";
-import { DAILY_LIMIT, useDailyLimit } from "@/lib/useDailyLimit";
-import { useLicense } from "@/lib/useLicense";
-import type { GenerateLessonResponse } from "@/types/lesson";
+import ThemeSwitcher from "@/components/ThemeSwitcher";
+import type { GenerateLessonResponse, Lesson } from "@/types/lesson";
 
-// Replace with your Lemon Squeezy checkout URL (or set the env var).
-const CHECKOUT_URL =
-  process.env.NEXT_PUBLIC_LEMONSQUEEZY_CHECKOUT_URL ??
-  "https://your-store.lemonsqueezy.com/buy/your-product-id";
+const EXAMPLE_TRANSCRIPT = `Today I want to talk about how to build a consistent English learning habit.
+The biggest mistake people make is trying to study for three hours once a week.
+It is much better to spend twenty minutes every day listening, repeating, and writing down useful phrases.
+When you hear a phrase in context, do not only translate it. Try to make your own sentence with it.
+Over time, these small daily actions compound and your English becomes more natural.`;
 
-type LicenseStatus = "idle" | "validating" | "error";
+const SAVED_LESSONS_KEY = "personal-english-lab-saved-lessons";
+const SAVED_LESSONS_EVENT = "personal-english-lab-saved-lessons-change";
+const MAX_SAVED_LESSONS = 30;
+
+interface SavedLesson {
+  id: string;
+  lesson: Lesson;
+  videoId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function createSavedLessonId() {
+  return `lesson-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function readSavedLessons(): SavedLesson[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SAVED_LESSONS_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as SavedLesson[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedLessons(lessons: SavedLesson[]) {
+  window.localStorage.setItem(
+    SAVED_LESSONS_KEY,
+    JSON.stringify(lessons.slice(0, MAX_SAVED_LESSONS)),
+  );
+  window.dispatchEvent(new Event(SAVED_LESSONS_EVENT));
+}
+
+function subscribeSavedLessons(onStoreChange: () => void) {
+  window.addEventListener(SAVED_LESSONS_EVENT, onStoreChange);
+  window.addEventListener("storage", onStoreChange);
+
+  return () => {
+    window.removeEventListener(SAVED_LESSONS_EVENT, onStoreChange);
+    window.removeEventListener("storage", onStoreChange);
+  };
+}
+
+function getSavedLessonsSnapshot() {
+  return JSON.stringify(readSavedLessons());
+}
+
+function getServerSavedLessonsSnapshot() {
+  return "[]";
+}
+
+function buildChatGptPrompt(transcript: string): string {
+  return `You are an expert English teacher creating lessons for Vietnamese speakers.
+
+Given a YouTube video transcript, produce a structured English lesson as valid JSON only - no markdown, no code fences, no extra text.
+
+The JSON must match this schema exactly:
+{
+  "title": "short lesson title in Vietnamese",
+  "summary": "2-3 sentence overview entirely in Vietnamese describing what English skills and topics the learner will study",
+  "vocabulary": [
+    {
+      "word": "English word or phrase from the transcript",
+      "phonetic": "IPA pronunciation, e.g. /kənˈsɪstənt/",
+      "definition": "clear explanation in Vietnamese of what the English word/phrase means",
+      "vietnamese": "Vietnamese translation or equivalent",
+      "context": "optional short English example quote from the transcript showing the word in use"
+    }
+  ],
+  "idiomsAndSlang": [
+    {
+      "phrase": "English idiom, slang, or colloquial expression",
+      "meaning": "explanation in Vietnamese of what it means",
+      "vietnamese": "Vietnamese equivalent or paraphrase",
+      "note": "optional usage note in Vietnamese"
+    }
+  ],
+  "exampleSentences": [
+    {
+      "sentence": "English example sentence using a key phrase",
+      "keyPhrase": "the highlighted English phrase",
+      "vietnamese": "Vietnamese translation of the sentence"
+    }
+  ],
+  "deepPractice": {
+    "shadowingPractice": {
+      "steps": [
+        "short Vietnamese instruction for pass 1",
+        "short Vietnamese instruction for pass 2",
+        "short Vietnamese instruction for pass 3"
+      ],
+      "lines": [
+        {
+          "line": "short natural English line from or closely based on the transcript",
+          "focus": "Vietnamese note about rhythm, linking, stress, or pronunciation",
+          "vietnamese": "Vietnamese meaning of the line"
+        }
+      ]
+    },
+    "sentenceMining": [
+      {
+        "sentence": "useful English sentence from or closely based on the transcript",
+        "pattern": "English pattern worth learning",
+        "whyUseful": "Vietnamese explanation of why this pattern is useful",
+        "remixPrompt": "Vietnamese prompt asking the learner to create a similar personal sentence"
+      }
+    ],
+    "reviewPlan": [
+      {
+        "day": "Day 1",
+        "task": "short Vietnamese review task"
+      }
+    ],
+    "ankiCards": [
+      {
+        "front": "English prompt or cloze deletion",
+        "back": "Vietnamese answer plus a short English example",
+        "hint": "optional Vietnamese hint"
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "quiz question in Vietnamese",
+      "options": ["Vietnamese option A", "Vietnamese option B", "Vietnamese option C", "Vietnamese option D"],
+      "correctAnswer": 0,
+      "explanation": "explanation in Vietnamese"
+    }
+  ]
+}
+
+Language rules:
+- title and summary MUST be entirely in Vietnamese
+- vocabulary.word, vocabulary.phonetic, idiomsAndSlang.phrase, and exampleSentences.sentence MUST be in English/IPA
+- definitions, meanings, notes, quiz questions, and explanations MUST be in Vietnamese
+- context field may be a short English quote from the transcript
+
+Requirements:
+- Include exactly 20 vocabulary items drawn from the transcript
+- Every vocabulary item MUST include phonetic IPA pronunciation in /slashes/
+- Include 3-6 idioms or slang expressions, use [] if none appear
+- Include exactly 5 example sentences using key phrases from the lesson
+- Include a compact deepPractice section:
+  - exactly 3 shadowing steps and exactly 3 shadowing lines
+  - exactly 3 sentenceMining items
+  - exactly 4 reviewPlan items for Day 1, Day 2, Day 4, Day 7
+  - exactly 5 Anki cards
+- Include exactly 5 quiz questions with 4 options each
+- correctAnswer must be the 0-based index of the correct option
+- Use simple, learner-friendly Vietnamese for all Vietnamese text
+- Keep deepPractice practical and concise, not academic or overwhelming
+
+CRITICAL - Quiz rules:
+- NEVER ask about the video's story, plot, events, people, places, times, or factual details.
+- ALL quiz questions MUST test English language knowledge only: vocabulary meanings, grammar usage, idiom/slang meanings, choosing the correct word/phrase, fill-in-the-blank, or identifying correct usage.
+- Every question must test whether the learner understands an English word, phrase, or grammar pattern from THIS lesson.
+- Quiz question text must be in Vietnamese; quiz answer options must ALL be in Vietnamese.
+
+Create an English lesson for Vietnamese speakers from this YouTube transcript:
+
+${transcript}`;
+}
+
+function stripJsonFences(text: string): string {
+  const trimmed = text.trim();
+
+  if (trimmed.startsWith("```")) {
+    return trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  }
+
+  return trimmed;
+}
+
+function parsePastedLesson(rawJson: string): Lesson {
+  const parsed = JSON.parse(stripJsonFences(rawJson)) as Lesson;
+
+  if (!parsed.title || !parsed.summary) {
+    throw new Error("JSON thiếu title hoặc summary.");
+  }
+
+  if (!Array.isArray(parsed.vocabulary) || parsed.vocabulary.length !== 20) {
+    throw new Error("JSON cần đúng 20 từ/cụm từ vocabulary.");
+  }
+
+  if (parsed.vocabulary.some((item) => !item.phonetic?.trim())) {
+    throw new Error("Mỗi vocabulary item cần có phonetic IPA.");
+  }
+
+  if (!Array.isArray(parsed.idiomsAndSlang)) {
+    throw new Error("JSON thiếu idiomsAndSlang.");
+  }
+
+  if (!Array.isArray(parsed.exampleSentences) || parsed.exampleSentences.length !== 5) {
+    throw new Error("JSON cần đúng 5 exampleSentences.");
+  }
+
+  if (!Array.isArray(parsed.quiz) || parsed.quiz.length !== 5) {
+    throw new Error("JSON cần đúng 5 câu quiz.");
+  }
+
+  if (!parsed.deepPractice) {
+    throw new Error("JSON thiếu deepPractice. Hãy copy lại prompt mới và tạo lại trong ChatGPT.");
+  }
+
+  if (
+    !Array.isArray(parsed.deepPractice.shadowingPractice?.steps) ||
+    parsed.deepPractice.shadowingPractice.steps.length !== 3 ||
+    !Array.isArray(parsed.deepPractice.shadowingPractice?.lines) ||
+    parsed.deepPractice.shadowingPractice.lines.length !== 3
+  ) {
+    throw new Error("deepPractice cần đúng 3 bước và 3 câu shadowing.");
+  }
+
+  if (
+    !Array.isArray(parsed.deepPractice.sentenceMining) ||
+    parsed.deepPractice.sentenceMining.length !== 3
+  ) {
+    throw new Error("deepPractice cần đúng 3 sentenceMining items.");
+  }
+
+  if (
+    !Array.isArray(parsed.deepPractice.reviewPlan) ||
+    parsed.deepPractice.reviewPlan.length !== 4
+  ) {
+    throw new Error("deepPractice cần đúng 4 reviewPlan items.");
+  }
+
+  if (
+    !Array.isArray(parsed.deepPractice.ankiCards) ||
+    parsed.deepPractice.ankiCards.length !== 5
+  ) {
+    throw new Error("deepPractice cần đúng 5 Anki cards.");
+  }
+
+  return parsed;
+}
 
 export default function LessonGenerator() {
-  const [url, setUrl] = useState("");
+  const [transcript, setTranscript] = useState("");
+  const [chatGptJson, setChatGptJson] = useState("");
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateLessonResponse | null>(null);
-  const [devMode, setDevMode] = useState(false);
+  const [activeSavedId, setActiveSavedId] = useState<string | undefined>();
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
-  const [showLicenseInput, setShowLicenseInput] = useState(false);
-  const [licenseInput, setLicenseInput] = useState("");
-  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus>("idle");
-  const [licenseError, setLicenseError] = useState<string | null>(null);
+  const prompt = useMemo(() => buildChatGptPrompt(transcript.trim()), [transcript]);
+  const savedLessonsSnapshot = useSyncExternalStore(
+    subscribeSavedLessons,
+    getSavedLessonsSnapshot,
+    getServerSavedLessonsSnapshot,
+  );
+  const savedLessons = useMemo(
+    () => JSON.parse(savedLessonsSnapshot) as SavedLesson[],
+    [savedLessonsSnapshot],
+  );
 
-  const { remaining, limitReached, hydrated, increment } = useDailyLimit();
-  const {
-    isPro,
-    hydrated: licenseHydrated,
-    activate,
-  } = useLicense();
+  function persistLesson(data: GenerateLessonResponse): string {
+    const now = new Date().toISOString();
+    const duplicate = savedLessons.find(
+      (item) =>
+        item.lesson.title === data.lesson.title &&
+        item.lesson.summary === data.lesson.summary,
+    );
 
-  const blockedByLimit = !devMode && !isPro && limitReached;
+    const savedLesson: SavedLesson = {
+      id: duplicate?.id ?? createSavedLessonId(),
+      lesson: data.lesson,
+      videoId: data.videoId,
+      createdAt: duplicate?.createdAt ?? now,
+      updatedAt: now,
+    };
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("dev") === "true") {
-      setDevMode(true);
-      setResult(SAMPLE_LESSON);
+    const next = [
+      savedLesson,
+      ...savedLessons.filter((item) => item.id !== savedLesson.id),
+    ].slice(0, MAX_SAVED_LESSONS);
+
+    writeSavedLessons(next);
+    setActiveSavedId(savedLesson.id);
+    setSaveNotice("Đã lưu bài học vào thư viện.");
+    window.setTimeout(() => setSaveNotice(null), 2200);
+
+    return savedLesson.id;
+  }
+
+  function showLesson(data: GenerateLessonResponse) {
+    const savedId = persistLesson(data);
+    setResult(data);
+    setActiveSavedId(savedId);
+  }
+
+  function loadSavedLesson(savedLesson: SavedLesson) {
+    setResult({
+      lesson: savedLesson.lesson,
+      videoId: savedLesson.videoId,
+    });
+    setActiveSavedId(savedLesson.id);
+    setError(null);
+    setSaveNotice("Đã mở bài học đã lưu.");
+    window.setTimeout(() => setSaveNotice(null), 1800);
+  }
+
+  function deleteSavedLesson(id: string) {
+    const next = savedLessons.filter((item) => item.id !== id);
+    writeSavedLessons(next);
+
+    if (activeSavedId === id) {
+      setActiveSavedId(undefined);
     }
-  }, []);
+  }
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    // Dev mode: skip the Claude API and load dummy data (no credits used).
-    if (devMode) {
-      setError(null);
-      setResult(SAMPLE_LESSON);
+  async function copyPrompt() {
+    const cleanedTranscript = transcript.trim();
+    if (!cleanedTranscript) {
+      setError("Bạn hãy dán transcript tiếng Anh trước.");
       return;
     }
 
-    if (blockedByLimit) {
+    await navigator.clipboard.writeText(buildChatGptPrompt(cleanedTranscript));
+    setCopied(true);
+    setError(null);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  async function handleApiSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const cleanedTranscript = transcript.trim();
+    if (!cleanedTranscript) {
+      setError("Bạn hãy dán transcript tiếng Anh trước.");
       return;
     }
 
@@ -66,7 +364,7 @@ export default function LessonGenerator() {
       const response = await fetch("/api/generate-lesson", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ transcript: cleanedTranscript }),
       });
 
       const data = (await response.json()) as GenerateLessonResponse & {
@@ -77,10 +375,7 @@ export default function LessonGenerator() {
         throw new Error(data.error ?? "Không thể tạo bài học.");
       }
 
-      setResult(data);
-      if (!isPro) {
-        increment();
-      }
+      showLesson(data);
     } catch (submitError) {
       setError(
         submitError instanceof Error
@@ -92,194 +387,209 @@ export default function LessonGenerator() {
     }
   }
 
-  async function handleLicenseSubmit() {
-    const key = licenseInput.trim();
-    if (!key) {
-      return;
-    }
-
-    setLicenseStatus("validating");
-    setLicenseError(null);
+  function handleJsonSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
     try {
-      const response = await fetch("/api/validate-license", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey: key }),
-      });
-
-      const data = (await response.json()) as {
-        valid?: boolean;
-        error?: string;
-      };
-
-      if (!response.ok || !data.valid) {
-        throw new Error(data.error ?? "Mã không hợp lệ hoặc đã hết hạn.");
-      }
-
-      activate(key);
-      setShowLicenseInput(false);
-      setLicenseInput("");
-      setLicenseStatus("idle");
-    } catch (validateError) {
-      setLicenseStatus("error");
-      setLicenseError(
-        validateError instanceof Error
-          ? validateError.message
-          : "Không thể xác thực mã.",
+      const lesson = parsePastedLesson(chatGptJson);
+      showLesson({ lesson });
+      setError(null);
+    } catch (parseError) {
+      setError(
+        parseError instanceof Error
+          ? `Không đọc được JSON: ${parseError.message}`
+          : "Không đọc được JSON từ ChatGPT.",
       );
     }
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[960px] flex-col gap-10 px-5 py-12 sm:px-6">
-      <header className="relative space-y-4 text-center">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/logo.png"
-          alt="Fluent"
-          className="mx-auto mb-2 h-16 w-auto"
-          style={{ filter: "drop-shadow(0 0 20px rgba(255, 103, 102, 0.3))" }}
-        />
-        <h1 className="text-4xl font-extrabold tracking-tight text-heading">
-          Fluent
-        </h1>
-        <p className="mx-auto max-w-xl text-base leading-7 text-body">
-          Biến mọi video YouTube thành bài học tiếng Anh
-        </p>
-        {devMode ? (
-          <span className="mx-auto flex w-fit items-center gap-1 rounded-full border-2 border-primary bg-primary px-3 py-1 text-xs font-bold uppercase tracking-wide text-white shadow-sm">
-            🛠️ Dev mode — dữ liệu mẫu
-          </span>
-        ) : null}
+    <div className="mx-auto flex w-full max-w-[1040px] flex-col gap-8 px-5 py-8 sm:px-6 lg:py-10">
+      <header className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <p className="pt-2 text-sm font-extrabold uppercase tracking-[0.12em] text-primary">
+            Personal English Lab
+          </p>
+          <ThemeSwitcher />
+        </div>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight text-heading sm:text-4xl">
+              Tạo bài học bằng ChatGPT Plus
+            </h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-body">
+              Copy transcript để tạo bài tự động bằng Gemini API Free, hoặc dùng
+              luồng thủ công với ChatGPT/Gemini nếu bạn muốn tự copy JSON.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTranscript(EXAMPLE_TRANSCRIPT)}
+            className="w-fit rounded-xl border-2 border-border bg-card px-4 py-3 text-sm font-extrabold text-primary shadow-sm transition ease-smooth hover:border-primary hover:bg-highlight"
+          >
+            Dùng transcript mẫu
+          </button>
+        </div>
       </header>
 
-      <form
-        onSubmit={handleSubmit}
-        className="rounded-3xl border-2 border-border bg-card p-6 shadow-sm sm:p-8"
-      >
-        <label
-          htmlFor="youtube-url"
-          className="block text-sm font-extrabold uppercase tracking-wide text-body"
-        >
-          Liên kết YouTube
-        </label>
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <input
-            id="youtube-url"
-            type="url"
-            required={!devMode}
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            placeholder="Dán link YouTube vào đây..."
-            disabled={blockedByLimit}
-            className="min-w-0 flex-1 rounded-2xl border-2 border-border bg-background px-4 py-4 text-base font-semibold text-heading outline-none placeholder:text-muted transition ease-smooth focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          <button
-            type="submit"
-            disabled={loading || (!devMode && !url.trim()) || blockedByLimit}
-            className="rounded-2xl bg-primary px-10 py-5 text-base font-extrabold uppercase tracking-wide text-white shadow-[0_4px_0_#CA2851] transition ease-smooth hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none active:translate-y-0.5 active:shadow-[0_2px_0_#CA2851]"
+      {savedLessons.length > 0 ? (
+        <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-extrabold text-heading">
+                Bài học đã lưu
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-body">
+                Bài mới tạo sẽ tự lưu trên trình duyệt này, kèm tiến độ từ vựng và quiz.
+              </p>
+            </div>
+            <span className="text-xs font-bold text-muted">
+              {savedLessons.length}/{MAX_SAVED_LESSONS} bài
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {savedLessons.slice(0, 5).map((savedLesson) => (
+              <article
+                key={savedLesson.id}
+                className={`rounded-xl border-2 p-4 transition ease-smooth ${
+                  activeSavedId === savedLesson.id
+                    ? "border-primary bg-highlight"
+                    : "border-border bg-background"
+                }`}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-extrabold leading-6 text-heading">
+                      {savedLesson.lesson.title}
+                    </h3>
+                    <p className="mt-1 text-xs font-bold text-muted">
+                      Lưu lúc{" "}
+                      {new Date(savedLesson.updatedAt).toLocaleString("vi-VN")}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => loadSavedLesson(savedLesson)}
+                      className="rounded-full border-2 border-primary bg-card px-4 py-2 text-xs font-extrabold uppercase tracking-wide text-primary transition ease-smooth hover:bg-white"
+                    >
+                      Mở
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteSavedLesson(savedLesson.id)}
+                      className="rounded-full border-2 border-border bg-card px-4 py-2 text-xs font-extrabold uppercase tracking-wide text-body transition ease-smooth hover:border-wrong hover:text-wrong"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
+        <div className="flex items-center justify-between gap-4">
+          <label
+            htmlFor="transcript"
+            className="text-sm font-extrabold uppercase tracking-wide text-body"
           >
-            {loading ? "Đang tạo bài học..." : "Bắt đầu"}
+            1. Transcript
+          </label>
+          <span className="text-xs font-bold text-muted">
+            {transcript.trim().length.toLocaleString("vi-VN")} ký tự
+          </span>
+        </div>
+
+        <textarea
+          id="transcript"
+          value={transcript}
+          onChange={(event) => setTranscript(event.target.value)}
+          placeholder="Dán transcript tiếng Anh từ YouTube vào đây..."
+          className="mt-4 min-h-[240px] w-full resize-y rounded-2xl border-2 border-border bg-background px-4 py-4 text-base leading-7 text-heading outline-none placeholder:text-muted transition ease-smooth focus:border-primary"
+        />
+
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm leading-6 text-body">
+            Luồng không cần API: copy prompt, gửi vào ChatGPT Plus, rồi dán JSON bên dưới.
+          </p>
+          <button
+            type="button"
+            onClick={copyPrompt}
+            disabled={!transcript.trim()}
+            className="button-depth rounded-2xl bg-accent px-8 py-4 text-base font-extrabold uppercase tracking-wide text-accent-foreground transition ease-smooth hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none active:translate-y-0.5"
+          >
+            {copied ? "Đã copy prompt" : "Copy prompt cho ChatGPT"}
           </button>
         </div>
 
-        <p className="mt-4 text-center text-sm text-body sm:text-left">
-          Hoạt động tốt nhất với video có phụ đề tiếng Anh.
-        </p>
+        <details className="mt-5 rounded-2xl border-2 border-border bg-background p-4">
+          <summary className="cursor-pointer text-sm font-extrabold text-primary">
+            Xem prompt sẽ gửi sang ChatGPT
+          </summary>
+          <pre className="mt-4 max-h-[320px] overflow-auto whitespace-pre-wrap rounded-xl bg-card p-4 text-xs leading-5 text-body">
+            {prompt}
+          </pre>
+        </details>
+      </section>
 
-        {hydrated && licenseHydrated ? (
-          isPro ? (
-            <p className="mt-2 flex items-center gap-1 text-center text-xs font-bold text-primary sm:text-left">
-              <span className="inline-flex items-center gap-1 rounded-full border-2 border-primary bg-highlight px-3 py-1">
-                ☕ Pro — không giới hạn
-              </span>
-            </p>
-          ) : (
-            <p className="mt-2 text-center text-xs font-bold text-primary sm:text-left">
-              Còn lại: {remaining}/{DAILY_LIMIT} lượt hôm nay
-            </p>
-          )
-        ) : null}
+      <form
+        onSubmit={handleJsonSubmit}
+        className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6"
+      >
+        <label
+          htmlFor="chatgpt-json"
+          className="text-sm font-extrabold uppercase tracking-wide text-body"
+        >
+          2. Dán JSON từ ChatGPT
+        </label>
+        <textarea
+          id="chatgpt-json"
+          value={chatGptJson}
+          onChange={(event) => setChatGptJson(event.target.value)}
+          placeholder="Dán toàn bộ JSON ChatGPT trả về vào đây..."
+          className="mt-4 min-h-[220px] w-full resize-y rounded-2xl border-2 border-border bg-background px-4 py-4 font-mono text-sm leading-6 text-heading outline-none placeholder:text-muted transition ease-smooth focus:border-primary"
+        />
 
-        {!isPro ? (
-          <div className="mt-4 border-t border-border pt-4">
-            {showLicenseInput ? (
-              <div className="space-y-2">
-                <label
-                  htmlFor="license-key"
-                  className="block text-xs font-bold text-body"
-                >
-                  Nhập mã ủng hộ của bạn
-                </label>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <input
-                    id="license-key"
-                    type="text"
-                    value={licenseInput}
-                    onChange={(event) => setLicenseInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void handleLicenseSubmit();
-                      }
-                    }}
-                    placeholder="Dán mã license vào đây..."
-                    className="min-w-0 flex-1 rounded-xl border-2 border-border bg-background px-4 py-3 text-sm font-semibold text-heading outline-none placeholder:text-muted transition ease-smooth focus:border-primary"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleLicenseSubmit()}
-                    disabled={licenseStatus === "validating" || !licenseInput.trim()}
-                    className="rounded-xl bg-primary px-6 py-3 text-sm font-extrabold uppercase tracking-wide text-white shadow-[0_3px_0_#CA2851] transition ease-smooth hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
-                  >
-                    {licenseStatus === "validating" ? "Đang kiểm tra..." : "Kích hoạt"}
-                  </button>
-                </div>
-                {licenseError ? (
-                  <p className="text-xs font-bold text-wrong">{licenseError}</p>
-                ) : null}
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <a
-                  href={CHECKOUT_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs font-bold text-primary underline-offset-2 transition ease-smooth hover:underline"
-                >
-                  ☕ Ủng hộ Fluent
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setShowLicenseInput(true)}
-                  className="text-xs font-bold text-primary underline-offset-2 transition ease-smooth hover:underline"
-                >
-                  Đã ủng hộ? Nhập mã tại đây
-                </button>
-              </div>
-            )}
-          </div>
-        ) : null}
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm leading-6 text-body">
+            Nếu ChatGPT bọc trong ```json, app vẫn tự bỏ phần đó khi đọc.
+          </p>
+          <button
+            type="submit"
+            disabled={!chatGptJson.trim()}
+            className="button-depth rounded-2xl bg-accent px-8 py-4 text-base font-extrabold uppercase tracking-wide text-accent-foreground transition ease-smooth hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none active:translate-y-0.5"
+          >
+            Hiển thị bài học
+          </button>
+        </div>
       </form>
 
-      {blockedByLimit ? (
-        <div className="rounded-2xl border-2 border-border bg-highlight px-6 py-6 text-center">
-          <p className="text-base font-bold leading-7 text-heading">
-            Fluent hoàn toàn miễn phí! Nếu bạn thấy hữu ích và muốn ủng hộ mình,
-            bạn có thể mua cho mình một ly cà phê để mình tiếp tục phát triển
-            Fluent ☕
-          </p>
-          <a
-            href={CHECKOUT_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-primary px-8 py-4 text-base font-extrabold uppercase tracking-wide text-white shadow-[0_4px_0_#CA2851] transition ease-smooth hover:bg-primary-hover active:translate-y-0.5 active:shadow-[0_2px_0_#CA2851]"
+      <form
+        onSubmit={handleApiSubmit}
+        className="rounded-2xl border-2 border-dashed border-border bg-highlight p-5 sm:p-6"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-extrabold text-heading">
+              Tạo tự động bằng Gemini API Free
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-body">
+              Dùng API key miễn phí từ Google AI Studio trong file .env.local.
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={loading || !transcript.trim()}
+            className="rounded-2xl border-2 border-primary bg-card px-6 py-3 text-sm font-extrabold uppercase tracking-wide text-primary transition ease-smooth hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Ủng hộ Fluent — $3 ☕
-          </a>
+            {loading ? "Đang tạo..." : "Tạo bằng Gemini"}
+          </button>
         </div>
-      ) : null}
+      </form>
 
       {error ? (
         <div
@@ -290,22 +600,32 @@ export default function LessonGenerator() {
         </div>
       ) : null}
 
+      {saveNotice ? (
+        <div className="rounded-2xl border-2 border-correct bg-correct-light px-5 py-4 text-sm font-bold text-heading">
+          {saveNotice}
+        </div>
+      ) : null}
+
       {loading ? (
-        <div className="rounded-3xl border-2 border-dashed border-border bg-highlight px-6 py-20 text-center">
-          <p className="text-4xl">⏳</p>
-          <p className="mt-4 text-lg font-extrabold text-heading">
+        <div className="rounded-2xl border-2 border-dashed border-border bg-highlight px-6 py-16 text-center">
+          <p className="text-lg font-extrabold text-heading">
             Đang tạo bài học...
           </p>
           <p className="mt-2 text-sm text-body">
-            Thường mất khoảng 20–40 giây.
+            Thường mất khoảng 20-40 giây, tùy độ dài transcript.
           </p>
         </div>
       ) : null}
 
       {result ? (
-        <div className="rounded-3xl border-2 border-border bg-card p-6 shadow-sm sm:p-8">
-          <LessonDisplay lesson={result.lesson} videoId={result.videoId} />
-        </div>
+        <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
+          <LessonDisplay
+            key={activeSavedId ?? result.lesson.title}
+            lesson={result.lesson}
+            lessonId={activeSavedId}
+            videoId={result.videoId}
+          />
+        </section>
       ) : null}
     </div>
   );
