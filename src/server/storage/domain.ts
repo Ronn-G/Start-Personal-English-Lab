@@ -1,7 +1,8 @@
-import type { Lesson } from "../../types/lesson";
+import { CURRENT_LESSON_SCHEMA_VERSION, type Lesson } from "../../types/lesson";
+import { CURRENT_PROGRESS_SCHEMA_VERSION, type LessonProgress } from "../../lib/lesson-progress";
 
-export const LESSON_SCHEMA_VERSION = 1;
-export const PROGRESS_SCHEMA_VERSION = 1;
+export const LESSON_SCHEMA_VERSION = CURRENT_LESSON_SCHEMA_VERSION;
+export const PROGRESS_SCHEMA_VERSION = CURRENT_PROGRESS_SCHEMA_VERSION;
 
 export interface LessonSource {
   title?: string;
@@ -25,14 +26,7 @@ export interface StoredLesson {
   deletedAt?: string;
 }
 
-export interface LessonProgressPayload {
-  answeredQuestions?: number[];
-  reviewedVocabularyIds?: string[];
-  quizScore?: number;
-  visitedTabs?: string[];
-  practiceFeedback?: unknown[];
-  [key: string]: unknown;
-}
+export type LessonProgressPayload = LessonProgress;
 
 export interface StoredLessonProgress {
   lessonId: string;

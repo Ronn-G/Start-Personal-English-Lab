@@ -12,6 +12,8 @@
   "include": [
     "src/types/lesson.ts",
     "src/types/node-sqlite.d.ts",
+    "src/lib/lesson-schema.ts",
+    "src/lib/lesson-progress.ts",
     "src/server/storage/data-directory.ts",
     "src/server/storage/database.ts",
     "src/server/storage/domain.ts",

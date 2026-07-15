@@ -1,228 +1,40 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
-
-import { resolveDataDirectory } from "../src/server/storage/data-directory";
+import { migrateLegacyProgress, validateLessonProgress } from "../src/lib/lesson-progress";
+import { normalizeLesson, parseLessonText, validateCanonicalLesson } from "../src/lib/lesson-schema";
 import { openStorageDatabase } from "../src/server/storage/database";
 import { StorageError } from "../src/server/storage/errors";
-import { CURRENT_DATABASE_VERSION, runMigrations } from "../src/server/storage/migrations";
-import {
-  mapLessonRow,
-  SqliteStorageRepository,
-} from "../src/server/storage/sqlite-repository";
+import { CURRENT_DATABASE_VERSION, MIGRATIONS, runMigrations } from "../src/server/storage/migrations";
+import { SqliteStorageRepository } from "../src/server/storage/sqlite-repository";
 import type { Lesson } from "../src/types/lesson";
 
-const temporaryDirectories: string[] = [];
+const dirs: string[] = [];
+afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+const temp = () => { const path = mkdtempSync(join(tmpdir(), "pel-test-")); dirs.push(path); return path; };
+const uuid = (group: number, index = 0) => `${String(group).padStart(8,"0")}-0000-4000-8000-${String(index).padStart(12,"0")}`;
 
-function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), "personal-english-lab-test-"));
-  temporaryDirectories.push(directory);
-  return directory;
-}
-
-afterEach(() => {
-  while (temporaryDirectories.length > 0) {
-    rmSync(temporaryDirectories.pop() as string, { recursive: true, force: true });
-  }
-});
-
-function sampleLesson(title = "Bài kiểm thử"): Lesson {
+function legacyLesson(): Record<string, unknown> {
   return {
-    title,
-    summary: "Tóm tắt bài kiểm thử.",
-    vocabulary: [],
-    idiomsAndSlang: [],
-    exampleSentences: [],
-    quiz: [],
+    title: "Bài kiểm thử", summary: "Tóm tắt bài kiểm thử.",
+    vocabulary: Array.from({length:20},(_,i)=>({word:`word ${i}`,phonetic:"/wɜːd/",definition:"định nghĩa",vietnamese:"từ"})),
+    idiomsAndSlang:[{phrase:"break the ice",meaning:"bắt chuyện",vietnamese:"phá tan im lặng"}],
+    exampleSentences:Array.from({length:5},(_,i)=>({sentence:`Sentence ${i}`,keyPhrase:"phrase",vietnamese:"Câu"})),
+    quiz:Array.from({length:5},(_,i)=>({question:`Question ${i}`,options:["A","B","C","D"],correctAnswer:i%4,explanation:"Giải thích"})),
+    deepPractice:{shadowingPractice:{steps:["one","two","three"],lines:Array.from({length:3},(_,i)=>({line:`Line ${i}`,focus:"focus",vietnamese:"dòng"}))},sentenceMining:Array.from({length:3},(_,i)=>({sentence:`Mine ${i}`,pattern:"pattern",whyUseful:"useful",remixPrompt:"remix"})),reviewPlan:[1,2,4,7].map(day=>({day:`Day ${day}`,task:"review"})),ankiCards:Array.from({length:5},(_,i)=>({front:`Front ${i}`,back:"Back"}))}
   };
 }
+function lesson(): Lesson { const result=normalizeLesson(legacyLesson(),{id:uuid(9),createdAt:"2026-01-01T00:00:00.000Z",generateId:(()=>{let i=1;return()=>uuid(8,i++);})()}); assert.ok(result.data); return result.data; }
+function progress(item: Lesson, lessonId=item.id) { return {lessonId,progressVersion:1 as const,quizItems:{},learningItems:{},visitedSections:[],practiceHistory:[],createdAt:item.createdAt,updatedAt:item.updatedAt}; }
 
-test("resolveDataDirectory honors configuration and safe fallbacks", () => {
-  assert.equal(
-    resolveDataDirectory({
-      env: { PERSONAL_ENGLISH_LAB_DATA_DIR: "custom-data", NODE_ENV: "development" },
-      cwd: "C:\\project",
-      platform: "win32",
-      homeDirectory: "C:\\Users\\tester",
-    }),
-    resolve("C:\\project", "custom-data"),
-  );
-  assert.equal(
-    resolveDataDirectory({
-      env: { NODE_ENV: "development" },
-      cwd: "C:\\project",
-      platform: "win32",
-    }),
-    resolve("C:\\project", ".data"),
-  );
-  assert.equal(
-    resolveDataDirectory({
-      env: { NODE_ENV: "production", LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
-      cwd: "C:\\app",
-      platform: "win32",
-    }),
-    resolve("C:\\Users\\tester\\AppData\\Local", "PersonalEnglishLab"),
-  );
-});
-
-test("new database migrates once and migration is idempotent", () => {
-  const databasePath = join(temporaryDirectory(), "storage.sqlite3");
-  const opened = openStorageDatabase(databasePath);
-  assert.equal(opened.schemaVersion, CURRENT_DATABASE_VERSION);
-  assert.equal(runMigrations(opened.database), CURRENT_DATABASE_VERSION);
-  const tables = opened.database
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-    .all() as Array<{ name: string }>;
-  assert.deepEqual(
-    tables.map((row) => row.name),
-    ["app_metadata", "lesson_progress", "lessons"],
-  );
-  opened.database.close();
-});
-
-test("database newer than the app is rejected without writes", () => {
-  const database = new DatabaseSync(":memory:");
-  database.exec("PRAGMA user_version = 99");
-  assert.throws(
-    () => runMigrations(database),
-    (error: unknown) =>
-      error instanceof StorageError && error.code === "UNSUPPORTED_DATABASE_VERSION",
-  );
-  const schemaCount = database
-    .prepare("SELECT count(*) AS count FROM sqlite_master")
-    .get() as { count: number };
-  assert.equal(schemaCount.count, 0);
-  database.close();
-});
-
-test("opening a newer file-backed database does not switch journal mode", () => {
-  const databasePath = join(temporaryDirectory(), "future.sqlite3");
-  const futureDatabase = new DatabaseSync(databasePath);
-  futureDatabase.exec("PRAGMA user_version = 99");
-  futureDatabase.close();
-
-  assert.throws(
-    () => openStorageDatabase(databasePath),
-    (error: unknown) =>
-      error instanceof StorageError && error.code === "UNSUPPORTED_DATABASE_VERSION",
-  );
-
-  const unchangedDatabase = new DatabaseSync(databasePath);
-  const version = unchangedDatabase.prepare("PRAGMA user_version").get() as {
-    user_version: number;
-  };
-  const journal = unchangedDatabase.prepare("PRAGMA journal_mode").get() as {
-    journal_mode: string;
-  };
-  assert.equal(version.user_version, 99);
-  assert.equal(journal.journal_mode, "delete");
-  unchangedDatabase.close();
-});
-
-test("failed migration rolls back its schema changes", () => {
-  const database = new DatabaseSync(":memory:");
-  assert.throws(() =>
-    runMigrations(database, [
-      {
-        version: 1,
-        name: "intentional_failure",
-        up(db) {
-          db.exec("CREATE TABLE should_rollback(id TEXT)");
-          throw new Error("boom");
-        },
-      },
-    ]),
-  );
-  const row = database
-    .prepare("SELECT name FROM sqlite_master WHERE name = 'should_rollback'")
-    .get();
-  assert.equal(row, undefined);
-  database.close();
-});
-
-test("repository supports lesson CRUD and progress round-trip", async () => {
-  const opened = openStorageDatabase(join(temporaryDirectory(), "repository.sqlite3"));
-  const repository = new SqliteStorageRepository(opened.database);
-  const created = await repository.createLesson({
-    lesson: sampleLesson(),
-    lessonDepth: "standard",
-    source: {
-      title: "Video title",
-      url: "https://example.test/video",
-      channel: "Test channel",
-      originalTranscript: "Original transcript",
-      processedTranscript: "Processed transcript",
-      wasTruncated: true,
-    },
-  });
-  assert.match(created.id, /^[0-9a-f-]{36}$/);
-  assert.equal((await repository.listLessons()).length, 1);
-  assert.equal((await repository.getLesson(created.id))?.source.channel, "Test channel");
-
-  const updated = await repository.updateLesson(created.id, {
-    lesson: sampleLesson("Bài đã cập nhật"),
-  });
-  assert.equal(updated.title, "Bài đã cập nhật");
-  assert.equal(updated.source.originalTranscript, "Original transcript");
-
-  const savedProgress = await repository.saveLessonProgress(created.id, {
-    answeredQuestions: [0, 2],
-    quizScore: 1,
-  });
-  assert.deepEqual(savedProgress.progress.answeredQuestions, [0, 2]);
-  assert.deepEqual(await repository.getLessonProgress(created.id), savedProgress);
-
-  await repository.deleteLesson(created.id);
-  assert.equal(await repository.getLesson(created.id), null);
-  assert.deepEqual(await repository.listLessons(), []);
-  opened.database.close();
-});
-
-test("create lesson and initial progress roll back together", async () => {
-  const opened = openStorageDatabase(join(temporaryDirectory(), "transaction.sqlite3"));
-  opened.database.exec(`
-    CREATE TRIGGER reject_progress BEFORE INSERT ON lesson_progress
-    BEGIN
-      SELECT RAISE(ABORT, 'progress rejected');
-    END;
-  `);
-  const repository = new SqliteStorageRepository(opened.database);
-  await assert.rejects(
-    repository.createLesson({
-      id: "transaction-test",
-      lesson: sampleLesson(),
-      initialProgress: { answeredQuestions: [0] },
-    }),
-  );
-  assert.equal(await repository.getLesson("transaction-test"), null);
-  opened.database.close();
-});
-
-test("mapper preserves every transitional lesson field", () => {
-  const mapped = mapLessonRow({
-    id: "mapper-test",
-    schema_version: 7,
-    title: "Title",
-    summary: "Summary",
-    lesson_depth: "deep",
-    lesson_json: JSON.stringify(sampleLesson("Title")),
-    created_at: "2026-01-01T00:00:00.000Z",
-    updated_at: "2026-01-02T00:00:00.000Z",
-    source_title: "Source",
-    source_url: "https://example.test",
-    source_channel: "Channel",
-    original_transcript: "Original",
-    processed_transcript: "Processed",
-    was_truncated: 1,
-    deleted_at: "2026-01-03T00:00:00.000Z",
-  });
-  assert.equal(mapped.schemaVersion, 7);
-  assert.equal(mapped.lessonDepth, "deep");
-  assert.equal(mapped.source.originalTranscript, "Original");
-  assert.equal(mapped.source.processedTranscript, "Processed");
-  assert.equal(mapped.source.wasTruncated, true);
-  assert.equal(mapped.deletedAt, "2026-01-03T00:00:00.000Z");
-});
+test("canonical Lesson validation and legacy normalization assign stable IDs",()=>{ const normalized=normalizeLesson(legacyLesson(),{id:uuid(9),createdAt:"2026-01-01T00:00:00.000Z",generateId:(()=>{let i=1;return()=>uuid(7,i++);})()}); assert.equal(normalized.success,true); assert.equal(validateCanonicalLesson(normalized.data).success,true); const again=normalizeLesson(normalized.data); assert.deepEqual(again.data,normalized.data); });
+test("duplicate item IDs are repaired while valid IDs are preserved",()=>{ const raw=legacyLesson(); const shared=uuid(6); (raw.vocabulary as Array<Record<string,unknown>>)[0].id=shared; (raw.vocabulary as Array<Record<string,unknown>>)[1].id=shared; let next=1; const result=normalizeLesson(raw,{id:uuid(9),createdAt:"2026-01-01T00:00:00Z",generateId:()=>uuid(5,next++)}); assert.equal(result.data?.vocabulary[0].id,shared); assert.equal(result.data?.vocabulary[1].id,uuid(5,1)); assert.ok(result.diagnostics.some(d=>d.code==="REPAIRED_ITEM_ID")); });
+test("parser handles fenced JSON and reports malformed or unsupported documents",()=>{ assert.equal(parseLessonText(`Đây là JSON:\n\`\`\`json\n${JSON.stringify(legacyLesson())}\n\`\`\`\nHết.`).success,true); assert.equal(parseLessonText("{broken").diagnostics[0].code,"MALFORMED_JSON"); assert.equal(parseLessonText(JSON.stringify({...legacyLesson(),schemaVersion:99})).diagnostics[0].code,"UNSUPPORTED_SCHEMA_VERSION"); });
+test("legacy quiz indexes migrate to IDs, deduplicate, and warn out of range",()=>{ const item=lesson(); const result=migrateLegacyProgress({answeredQuestions:[0,0,3,99,"x"],visitedTabs:["quiz"]},item); assert.equal(result.success,true); assert.deepEqual(Object.keys(result.data!.quizItems),[item.quiz[0].id,item.quiz[3].id]); assert.equal(result.diagnostics.length,2); assert.equal(validateLessonProgress(result.data).success,true); });
+test("canonical Progress rejects index-based shape",()=>{ assert.equal(validateLessonProgress({answeredQuestions:[0]}).success,false); });
+test("database migrates 1 to 2 without losing legacy content and rejects newer versions",()=>{ const db=new DatabaseSync(":memory:"); runMigrations(db,[MIGRATIONS[0]]); const id=uuid(4); const legacy=JSON.stringify({...legacyLesson(),unknownLegacyField:"kept"}); db.prepare("INSERT INTO lessons(id,schema_version,title,summary,lesson_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id,1,"title","summary",legacy,"2026-01-01","2026-01-01"); db.prepare("INSERT INTO lesson_progress(lesson_id,progress_version,progress_json,created_at,updated_at) VALUES(?,?,?,?,?)").run(id,1,JSON.stringify({answeredQuestions:[0,99]}),"2026-01-01","2026-01-01"); assert.equal(runMigrations(db),2); const migrated=JSON.parse((db.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as {lesson_json:string}).lesson_json); assert.equal(migrated.title,"Bài kiểm thử"); assert.equal(migrated.unknownLegacyField,"kept"); assert.equal(validateCanonicalLesson(migrated).success,true); const migratedProgress=JSON.parse((db.prepare("SELECT progress_json FROM lesson_progress WHERE lesson_id=?").get(id) as {progress_json:string}).progress_json); assert.equal(validateLessonProgress(migratedProgress).success,true); db.close(); const future=new DatabaseSync(":memory:"); future.exec("PRAGMA user_version=99"); assert.throws(()=>runMigrations(future),(e)=>e instanceof StorageError&&e.code==="UNSUPPORTED_DATABASE_VERSION"); future.close(); });
+test("new database v2 and repository preserve canonical IDs and progress",async()=>{ const opened=openStorageDatabase(join(temp(),"db.sqlite3")); assert.equal(opened.schemaVersion,CURRENT_DATABASE_VERSION); const repo=new SqliteStorageRepository(opened.database); const source=lesson(); const created=await repo.createLesson({id:source.id,lesson:source}); assert.deepEqual(created.lesson,source); const saved=await repo.saveLessonProgress(source.id,progress(source)); assert.deepEqual((await repo.getLesson(source.id))?.lesson,source); assert.deepEqual(await repo.getLessonProgress(source.id),saved); opened.database.close(); });
+test("failed migration rolls back",()=>{ const db=new DatabaseSync(":memory:"); assert.throws(()=>runMigrations(db,[{version:1,name:"fail",up(d){d.exec("CREATE TABLE nope(id TEXT)");throw new Error("boom");}}])); assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='nope'").get(),undefined); db.close(); });

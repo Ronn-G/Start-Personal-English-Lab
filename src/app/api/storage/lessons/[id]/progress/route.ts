@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { isRecord, readJsonBody, storageErrorResponse } from "@/server/storage/api";
 import { StorageError } from "@/server/storage/errors";
+import type { LessonProgressPayload } from "@/server/storage/domain";
 import { getStorageContext } from "@/server/storage";
 
 export const runtime = "nodejs";
@@ -34,7 +35,7 @@ export async function PUT(request: Request, { params }: RouteParameters) {
     const { id } = await params;
     const progress = await getStorageContext().repository.saveLessonProgress(
       id,
-      body.progress,
+      body.progress as unknown as LessonProgressPayload,
       version === undefined ? undefined : Number(version),
     );
     return NextResponse.json({ progress });

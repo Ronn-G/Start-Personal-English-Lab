@@ -8,6 +8,18 @@ const temporaryRoot = await mkdtemp(join(tmpdir(), "pel-storage-smoke-"));
 const dataDirectory = join(temporaryRoot, "data");
 const serverPath = resolve(".next", "standalone", "server.js");
 let stderr = "";
+const lessonId = crypto.randomUUID();
+const item = (extra) => ({ id: crypto.randomUUID(), ...extra });
+const now = new Date().toISOString();
+const canonicalLesson = {
+  id: lessonId, schemaVersion: 1, createdAt: now, updatedAt: now,
+  title: "Storage smoke lesson", summary: "Temporary standalone storage check.",
+  vocabulary: Array.from({ length: 20 }, (_, i) => item({ word: `word ${i}`, phonetic: "/wɜːd/", definition: "definition", vietnamese: "từ" })),
+  idiomsAndSlang: [item({ phrase: "break the ice", meaning: "start talking", vietnamese: "bắt chuyện" })],
+  exampleSentences: Array.from({ length: 5 }, (_, i) => item({ sentence: `Sentence ${i}`, keyPhrase: "phrase", vietnamese: "Câu" })),
+  quiz: Array.from({ length: 5 }, (_, i) => item({ question: `Question ${i}`, options: ["A", "B", "C", "D"], correctAnswer: 0, explanation: "Explanation" })),
+  deepPractice: { shadowingPractice: { steps: ["1", "2", "3"], lines: Array.from({ length: 3 }, (_, i) => item({ line: `Line ${i}`, focus: "focus", vietnamese: "dòng" })) }, sentenceMining: Array.from({ length: 3 }, (_, i) => item({ sentence: `Mine ${i}`, pattern: "pattern", whyUseful: "useful", remixPrompt: "remix" })), reviewPlan: [1, 2, 4, 7].map((day) => ({ day: `Day ${day}`, task: "review" })), ankiCards: Array.from({ length: 5 }, (_, i) => item({ front: `Front ${i}`, back: "Back" })) },
+};
 
 const server = spawn(process.execPath, [serverPath], {
   cwd: process.cwd(),
@@ -47,14 +59,7 @@ try {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      lesson: {
-        title: "Storage smoke lesson",
-        summary: "Temporary standalone storage check.",
-        vocabulary: [],
-        idiomsAndSlang: [],
-        exampleSentences: [],
-        quiz: [],
-      },
+      lesson: canonicalLesson,
     }),
   });
   if (lessonResponse.status !== 201) {
@@ -67,7 +72,7 @@ try {
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ progress: { answeredQuestions: [0] } }),
+      body: JSON.stringify({ progress: { lessonId, progressVersion: 1, quizItems: {}, learningItems: {}, visitedSections: [], practiceHistory: [], createdAt: now, updatedAt: now } }),
     },
   );
   if (!progressResponse.ok) {
@@ -89,7 +94,7 @@ try {
       {
         health,
         lessonCreatedWithStableId: /^[0-9a-f-]{36}$/.test(lesson.id),
-        progressRoundTrip: progress.progress.answeredQuestions[0] === 0,
+        progressRoundTrip: progress.progress.lessonId === lessonId,
         lessonSoftDeleted: deleteResponse.status === 204,
         databaseCreated: database.isFile(),
         databaseBytes: database.size,

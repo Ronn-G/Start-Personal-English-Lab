@@ -121,8 +121,9 @@ export class SqliteStorageRepository implements StorageRepository {
     const source = normalizeSource(input.source);
     if (input.initialProgress !== undefined) assertValidProgress(input.initialProgress);
 
-    const id = input.id ?? randomUUID();
+    const id = input.id ?? input.lesson.id ?? randomUUID();
     assertValidId(id);
+    if (input.lesson.id !== id) throw new StorageError("VALIDATION_ERROR", "Lesson document ID phải khớp database record ID.");
     const now = new Date().toISOString();
     const schemaVersion = input.schemaVersion ?? LESSON_SCHEMA_VERSION;
     if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
@@ -238,6 +239,7 @@ export class SqliteStorageRepository implements StorageRepository {
   ): Promise<StoredLessonProgress> {
     assertValidId(lessonId);
     assertValidProgress(progress);
+    if (progress.lessonId !== lessonId) throw new StorageError("VALIDATION_ERROR", "Progress lessonId không khớp lesson.");
     if (!Number.isInteger(progressVersion) || progressVersion < 1) {
       throw new StorageError("VALIDATION_ERROR", "Progress version không hợp lệ.");
     }

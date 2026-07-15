@@ -350,7 +350,7 @@ Kiểm tra score là number; `overall`, `improvedVersion`, `nextStep` truthy; st
 ## 12. Nền tảng SQLite sau Sprint 1
 
 - Driver server-side: built-in `node:sqlite`; runtime tối thiểu Node 24.
-- Database schema version: 1 (`app_metadata`, `lessons`, `lesson_progress`).
+- Database schema version: 2 (`app_metadata`, `lessons`, `lesson_progress`). See `docs/data-schema.md` for Sprint 2 contracts and migration policy.
 - Stable lesson ID cho API/repository mới: UUID tạo bằng `crypto.randomUUID()`; ID localStorage cũ chưa đổi.
 - Development data directory: `.data` trừ khi đặt `PERSONAL_ENGLISH_LAB_DATA_DIR`.
 - Portable/production Windows: Local AppData, nằm ngoài artifact.

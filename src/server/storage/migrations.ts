@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import { migrateLegacyProgress, validateLessonProgress } from "../../lib/lesson-progress";
+import { normalizeLesson } from "../../lib/lesson-schema";
 
 import { StorageError } from "./errors";
 
@@ -8,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 1;
+export const CURRENT_DATABASE_VERSION = 2;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -52,6 +54,30 @@ export const MIGRATIONS: readonly Migration[] = [
           FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
         ) STRICT;
       `);
+    },
+  },
+  {
+    version: 2,
+    name: "canonical_lesson_and_progress_documents",
+    up(database) {
+      const rows = database.prepare("SELECT id, lesson_json, created_at, updated_at FROM lessons").all() as Array<{ id: string; lesson_json: string; created_at: string; updated_at: string }>;
+      const updateLesson = database.prepare("UPDATE lessons SET schema_version = 1, lesson_json = ? WHERE id = ?");
+      const updateProgress = database.prepare("UPDATE lesson_progress SET progress_version = 1, progress_json = ? WHERE lesson_id = ?");
+      for (const row of rows) {
+        const normalized = normalizeLesson(JSON.parse(row.lesson_json), { id: row.id, createdAt: row.created_at, updatedAt: row.updated_at });
+        if (!normalized.success || !normalized.data) throw new Error(`Không thể migrate lesson ${row.id}: ${normalized.diagnostics.map((d) => d.message).join("; ")}`);
+        updateLesson.run(JSON.stringify(normalized.data), row.id);
+        const progressRow = database.prepare("SELECT progress_json FROM lesson_progress WHERE lesson_id = ?").get(row.id) as { progress_json: string } | undefined;
+        if (!progressRow) continue;
+        const rawProgress = JSON.parse(progressRow.progress_json) as unknown;
+        const canonical = validateLessonProgress(rawProgress);
+        if (canonical.success && canonical.data) updateProgress.run(JSON.stringify(canonical.data), row.id);
+        else {
+          const migrated = migrateLegacyProgress(rawProgress, normalized.data, row.created_at);
+          if (!migrated.success || !migrated.data) throw new Error(`Không thể migrate progress ${row.id}.`);
+          updateProgress.run(JSON.stringify(migrated.data), row.id);
+        }
+      }
     },
   },
 ];

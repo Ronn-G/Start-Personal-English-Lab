@@ -58,7 +58,9 @@ Priority:
 
 The database filename is `personal-english-lab.sqlite3`. The portable launcher explicitly sets `PERSONAL_ENGLISH_LAB_DATA_DIR` to Local AppData, so an app update or re-extraction does not overwrite user data. The database, WAL/SHM/journal files and `.data` are gitignored. Build scripts do not copy a development database into the artifact.
 
-## 4. Database schema version 1
+## 4. Database schema version 2
+
+Migration 2 transactionally converts version-1 database JSON to canonical Lesson v1 and Progress v1 while retaining unknown legacy fields. This is database migration only; localStorage remains untouched for explicit Sprint 3 migration. New repository writes require canonical documents.
 
 SQLite `PRAGMA user_version` is the authoritative migration counter. `app_metadata.schema_version` mirrors it for diagnostics.
 
