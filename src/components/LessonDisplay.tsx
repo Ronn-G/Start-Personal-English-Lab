@@ -10,6 +10,9 @@ import VocabularyCards from "@/components/lesson/VocabularyCards";
 import { CURRENT_PROGRESS_SCHEMA_VERSION, type LessonProgress } from "@/lib/lesson-progress";
 import { storageClient } from "@/lib/storage-client";
 import type { Lesson } from "@/types/lesson";
+import { audioClient } from "@/lib/audio-client";
+import { selectLessonAudioPreloadItems } from "@/lib/audio-domain";
+import AudioCacheControls from "@/components/AudioCacheControls";
 
 type LessonTab = "vocabulary" | "idioms" | "grammar" | "practice" | "quiz";
 
@@ -38,6 +41,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
   const [progress, setProgress] = useState<LessonProgress>(() => emptyProgress(storageLessonId, lesson.createdAt));
   const [progressLoading, setProgressLoading] = useState(true);
   const [progressError, setProgressError] = useState<string | null>(null);
+  const [audioProgress,setAudioProgress]=useState<{ready:number;total:number;failed:number}|null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const [visitedTabs, setVisitedTabs] = useState<Set<LessonTab>>(
     new Set<LessonTab>(["vocabulary"]),
@@ -81,6 +85,8 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
     }).catch((reason) => { if (active) setProgressError(reason instanceof Error ? reason.message : "Không thể tải tiến độ."); }).finally(() => { if (active) setProgressLoading(false); });
     return () => { active = false; };
   }, [lesson.createdAt, storageLessonId]);
+
+  useEffect(()=>{const items=selectLessonAudioPreloadItems(lesson);Promise.resolve().then(()=>setAudioProgress({ready:0,total:items.length,failed:0}));if(document.visibilityState==="visible")audioClient.preload(items,(ready,total,failed)=>setAudioProgress({ready,total,failed}));return()=>audioClient.cancelLesson(lesson.id);},[lesson]);
 
   const handleReviewWord = useCallback((word: string) => {
     setReviewedWords((prev) => {
@@ -161,6 +167,8 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
   return (
     <div>
       <header className="mb-8">
+        {audioProgress&&audioProgress.ready<audioProgress.total?<p role="status" className="mb-3 text-xs font-bold text-muted">Đang chuẩn bị âm thanh: {audioProgress.ready}/{audioProgress.total}{audioProgress.failed?` · ${audioProgress.failed} lỗi`:""}</p>:null}
+        <AudioCacheControls />
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
           {videoUrl && thumbnailUrl ? (
             <a

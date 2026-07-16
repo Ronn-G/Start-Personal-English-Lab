@@ -1,42 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-const KOKORO_TTS_URL = "http://127.0.0.1:5050/tts";
-const KOKORO_VOICE = "af_sarah";
+import { audioClient } from "@/lib/audio-client";
 
 interface SpeakButtonProps {
   text: string;
   label?: string;
   rate?: number;
-}
-
-async function fetchKokoroAudio(text: string, rate: number): Promise<Blob> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30_000);
-
-  try {
-    const response = await fetch(KOKORO_TTS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        voice: KOKORO_VOICE,
-        speed: Math.min(Math.max(rate / 0.86, 0.65), 1.35),
-        lang: "en-us",
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Kokoro TTS failed (${response.status}): ${detail}`);
-    }
-
-    return response.blob();
-  } finally {
-    window.clearTimeout(timeout);
-  }
 }
 
 export default function SpeakButton({
@@ -46,13 +16,11 @@ export default function SpeakButton({
 }: SpeakButtonProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
+  const activeRef = useRef(true);
 
   useEffect(() => {
     return () => {
-      audioRef.current?.pause();
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      activeRef.current=false;
     };
   }, []);
 
@@ -64,28 +32,16 @@ export default function SpeakButton({
     setError(false);
 
     try {
-      audioRef.current?.pause();
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
-      }
-
-      const audioBlob = await fetchKokoroAudio(text, rate);
-      const objectUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(objectUrl);
-      audioRef.current = audio;
-      objectUrlRef.current = objectUrl;
-      await audio.play();
-    } catch (kokoroError) {
-      console.error("Không thể phát giọng Kokoro ONNX.", kokoroError);
-      setError(true);
+      activeRef.current=true; await audioClient.play(text,"user",rate);
+    } catch {
+      if(!activeRef.current)return;setError(true);if("speechSynthesis" in window){window.speechSynthesis.cancel();const utterance=new SpeechSynthesisUtterance(text);utterance.lang="en-US";utterance.rate=rate;const voice=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("en"));if(voice)utterance.voice=voice;window.speechSynthesis.speak(utterance);}
     } finally {
       setLoading(false);
     }
   }
 
   const title = error
-    ? "Kokoro ONNX chưa chạy. Hãy mở app bằng Start Personal English Lab.vbs."
+    ? "Kokoro chưa sẵn sàng; đang dùng giọng trình duyệt."
     : `${label}: ${text}`;
 
   return (
@@ -98,7 +54,7 @@ export default function SpeakButton({
       title={title}
     >
       <span aria-hidden="true">🔊</span>
-      {loading ? "Đang tạo..." : error ? "Kokoro chưa chạy" : label}
+      {loading ? "Đang chuẩn bị..." : error ? "Giọng trình duyệt" : label}
     </button>
   );
 }

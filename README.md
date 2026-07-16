@@ -2,6 +2,8 @@
 
 Sprint 4 adds local JSON backup and restore. Use **Sao lưu và khôi phục** to download a versioned backup, preview an import, then Merge or explicitly confirm Replace all. Backups never include the Gemini API key, machine paths, legacy localStorage, logs, audio, or models. See [docs/backup-and-restore.md](docs/backup-and-restore.md).
 
+Sprint 5 prepares important lesson audio sequentially in the background and caches validated WAV files under the writable application data directory. The cache is limited to 500 MB, can be cleared without affecting learning data, and is never included in backup. See [docs/audio-cache.md](docs/audio-cache.md).
+
 App ca nhan de tao bai hoc tieng Anh tu transcript YouTube ban tu copy.
 
 ## Cach dung voi ChatGPT Plus
@@ -88,12 +90,14 @@ npm.cmd test
 npm.cmd run lint
 npm.cmd run build
 npm.cmd run smoke:storage
+npm.cmd run smoke:backup
+npm.cmd run smoke:audio
 ```
 
 ## SQLite storage (Sprint 1)
 
 Tang SQLite server-side da co API va migration, nhung giao dien hien tai van dung
-SQLite schema v3 là nguồn dữ liệu chính cho thư viện bài học và quiz progress. Dữ liệu localStorage cũ chỉ được chuyển sau dry-run và xác nhận; các key cũ không bị xóa hoặc ghi đè. Xem `docs/localstorage-migration.md`.
+SQLite schema v5 là nguồn dữ liệu chính cho thư viện bài học, quiz progress và metadata audio cache. Dữ liệu localStorage cũ chỉ được chuyển sau dry-run và xác nhận; các key cũ không bị xóa hoặc ghi đè. Xem `docs/localstorage-migration.md`.
 
 Development mac dinh tao database trong `.data`. Co the chon thu muc ghi duoc:
 

@@ -1,5 +1,7 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Sprint 5: SQLite schema v5 tracks filesystem audio cache metadata. Lesson UI uses a shared concurrency-1 client queue; Node audio routes own Kokoro generation, WAV validation, atomic file publication, serving, LRU cleanup and clear operations. Web Speech fallback now exists in runtime and is only invoked after a user click.
+
 > Sprint 4: SQLite schema v4 adds compact import receipts. `/api/backup/export` creates validated backup v1 snapshots; `/api/backup/import` provides dry-run, merge, and confirmed transactional replace. Backup/domain logic lives in `src/server/backup`, not React or route handlers.
 
 > Cập nhật Sprint 3 ngày 2026-07-16: SQLite schema v3 là source of truth cho thư viện Lesson và quiz progress; localStorage legacy chỉ được đọc cho migration có preview/xác nhận và không bị sửa/xóa.

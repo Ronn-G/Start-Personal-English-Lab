@@ -24,6 +24,8 @@
     "src/server/storage/sqlite-repository.ts",
     "src/server/storage/validation.ts",
     "src/server/backup/backup.ts",
+    "src/lib/audio-domain.ts",
+    "src/server/audio/audio-cache.ts",
     "test/**/*.test.ts"
   ]
 }

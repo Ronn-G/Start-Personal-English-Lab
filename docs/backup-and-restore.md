@@ -1,5 +1,7 @@
 # Backup and restore (Sprint 4)
 
+Sprint 5 audio cache files and SQLite `audio_cache` operational metadata remain excluded. Merge and Replace do not delete reusable text-keyed audio cache.
+
 Personal English Lab exports one canonical UTF-8 JSON document with `backupFormat: "personal-english-lab"` and independent `backupVersion: 1`. Backup version is separate from app, SQLite (v4), Lesson (v1), and Progress (v1) versions. Future formats must use an explicit migration step; a newer unsupported version is rejected before any write.
 
 The backup contains active canonical lessons, their stable lesson/item UUIDs, canonical progress, timestamps, source app/schema metadata, an empty allow-listed `settings` object, and a SHA-256 checksum over a deterministic canonical payload. It excludes soft-deleted lessons by default, API keys, environment variables/files, paths, logs, caches, audio/models, migration diagnostics, legacy localStorage and all credentials. Current localStorage theme/preferences are intentionally not backed up.

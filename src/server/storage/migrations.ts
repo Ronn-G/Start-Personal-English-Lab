@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 4;
+export const CURRENT_DATABASE_VERSION = 5;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -120,6 +120,23 @@ export const MIGRATIONS: readonly Migration[] = [
         CREATE INDEX import_receipts_fingerprint_idx
           ON import_receipts(source_fingerprint, imported_at DESC);
       `);
+    },
+  },
+  {
+    version: 5,
+    name: "audio_cache_metadata",
+    up(database) {
+      database.exec(`CREATE TABLE audio_cache (
+        cache_key TEXT PRIMARY KEY NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('generating','ready','failed','stale')),
+        relative_path TEXT, size_bytes INTEGER,
+        voice TEXT NOT NULL, speed REAL NOT NULL, language TEXT NOT NULL,
+        model_version TEXT NOT NULL, normalization_version INTEGER NOT NULL,
+        format TEXT NOT NULL, created_at TEXT, updated_at TEXT NOT NULL,
+        last_accessed_at TEXT, failure_count INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT
+      ) STRICT;
+      CREATE INDEX audio_cache_lru_idx ON audio_cache(status,last_accessed_at);`);
     },
   },
 ];

@@ -1,8 +1,10 @@
 # Data schemas (Sprint 2)
 
+Sprint 5 raises SQLite to **5** with `audio_cache`; WAV data and raw text are not stored in SQLite. Backup remains independently versioned at 1 and deliberately ignores this operational table.
+
 Sprint 4 adds a fourth independent version: backup format **1** (`CURRENT_BACKUP_VERSION`). SQLite is now **4**; Lesson and Progress remain **1**. Schema v4 adds `import_receipts(import_id, imported_at, source_fingerprint, mode, lesson_count, progress_count, result, warning_count)` and stores no backup blob.
 
-Four independent integer versions exist: SQLite database **4** (`PRAGMA user_version`), backup format **1** (`CURRENT_BACKUP_VERSION`), Lesson document **1** (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1** (`CURRENT_PROGRESS_SCHEMA_VERSION`).
+Four independent integer versions exist: SQLite database **5** (`PRAGMA user_version`), backup format **1** (`CURRENT_BACKUP_VERSION`), Lesson document **1** (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1** (`CURRENT_PROGRESS_SCHEMA_VERSION`).
 
 ## Lesson v1 and stable IDs
 

@@ -13,7 +13,8 @@
     "lint": "eslint",
     "test": "tsc -p tsconfig.test.json && node --test \".test-dist/test/**/*.test.js\"",
     "smoke:storage": "node tools/smoke_storage.mjs",
-    "smoke:backup": "npm.cmd test -- --test-name-pattern=backup"
+    "smoke:backup": "npm.cmd test -- --test-name-pattern=backup",
+    "smoke:audio": "npm.cmd test -- --test-name-pattern=audio"
   },
   "dependencies": {
     "next": "16.2.7",
