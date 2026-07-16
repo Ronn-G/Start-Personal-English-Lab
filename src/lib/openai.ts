@@ -1,6 +1,7 @@
 import { formatLessonDiagnostics, parseLessonText, stripJsonFences } from "./lesson-schema";
 import { LESSON_SYSTEM_PROMPT } from "./lesson-prompt";
 import type { Lesson, PracticeFeedback } from "../types/lesson";
+import { parseSentenceCheck, type SentenceCheckResult } from "./sentence-check";
 
 const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const GEMINI_MAX_OUTPUT_TOKENS = 16_384;
@@ -14,14 +15,14 @@ interface GeminiResponse {
   error?: { message?: string };
 }
 
-async function generateGeminiJson({ systemPrompt, userPrompt }: { systemPrompt: string; userPrompt: string }): Promise<string> {
+export async function generateGeminiJson({ systemPrompt, userPrompt }: { systemPrompt: string; userPrompt: string }): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Chưa cấu hình GEMINI_API_KEY.");
   const model = process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash";
   const response = await fetch(`${GEMINI_API_BASE_URL}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    signal: AbortSignal.timeout(20_000), body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
       generationConfig: {
@@ -78,4 +79,10 @@ export async function generatePracticeFeedback({ mode, lessonTitle, target, answ
     userPrompt: `Lesson: ${lessonTitle}\nPractice mode: ${mode}\nTarget sentence or prompt: ${target}\nLearner answer/transcript: ${answer}`,
   });
   return parsePracticeFeedback(content);
+}
+
+export async function generateSentenceCheck(input:{original:string;question?:string;pattern:string;targetPhrase?:string;sentence:string}):Promise<SentenceCheckResult>{
+  if(process.env.SENTENCE_CHECK_MOCK==="1")return {understandable:true,verdict:"needs_small_fix",correctedSentence:"I need to be honest with myself about how much time I spend gaming.",naturalAlternative:"I need to admit that I spend too much time gaming.",explanationVi:"Sau ‘about’, nên dùng một cụm danh từ hoặc cấu trúc ‘how much...’."};
+  const raw=await generateGeminiJson({systemPrompt:"You check one personal English sentence for a Vietnamese learner. Preserve their exact meaning and personal experience. Prefer short, natural spoken English. Correct only necessary grammar, vocabulary, or structure. correctedSentence stays as close as possible; naturalAlternative is null when no improvement is needed. explanationVi is 1–3 short Vietnamese sentences. Never score, judge, use markdown, or add fields. Return JSON only with understandable, verdict (clear|needs_small_fix|needs_rewrite|unclear), correctedSentence, naturalAlternative, explanationVi.",userPrompt:`Learner: Vietnamese; wants natural spoken English and short easy-to-say sentences.\nOriginal: ${input.original}\nQuestion: ${input.question??""}\nUseful pattern: ${input.pattern}\nTarget phrase: ${input.targetPhrase??""}\nUser sentence: ${input.sentence}`});
+  return parseSentenceCheck(raw);
 }

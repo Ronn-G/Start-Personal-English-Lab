@@ -13,6 +13,7 @@ import type { Lesson } from "@/types/lesson";
 import { audioClient } from "@/lib/audio-client";
 import { selectLessonAudioPreloadItems } from "@/lib/audio-domain";
 import AudioCacheControls from "@/components/AudioCacheControls";
+import SpeakingPractice from "@/components/SpeakingPractice";
 
 type LessonTab = "vocabulary" | "idioms" | "grammar" | "practice" | "quiz";
 
@@ -28,15 +29,18 @@ interface LessonDisplayProps {
   lesson: Lesson;
   lessonId?: string;
   videoId?: string;
+  initialSpeakingOpen?: boolean;
 }
 
 function emptyProgress(lessonId: string, timestamp: string): LessonProgress {
   return { lessonId, progressVersion: CURRENT_PROGRESS_SCHEMA_VERSION, quizItems: {}, learningItems: {}, visitedSections: ["vocabulary"], practiceHistory: [], createdAt: timestamp, updatedAt: timestamp };
 }
 
-export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDisplayProps) {
+export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeakingOpen=false }: LessonDisplayProps) {
   const storageLessonId = lessonId ?? lesson.id;
   const [activeTab, setActiveTab] = useState<LessonTab>("vocabulary");
+  const [speakingOpen,setSpeakingOpen]=useState(initialSpeakingOpen);
+  const [speakingEntry,setSpeakingEntry]=useState<{label:string;detail:string}>({label:"Start Speaking Practice",detail:"5–10 minutes · practice from this lesson"});
   const [reviewedWords, setReviewedWords] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<LessonProgress>(() => emptyProgress(storageLessonId, lesson.createdAt));
   const [progressLoading, setProgressLoading] = useState(true);
@@ -87,6 +91,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
   }, [lesson.createdAt, storageLessonId]);
 
   useEffect(()=>{const items=selectLessonAudioPreloadItems(lesson);Promise.resolve().then(()=>setAudioProgress({ready:0,total:items.length,failed:0}));if(document.visibilityState==="visible")audioClient.preload(items,(ready,total,failed)=>setAudioProgress({ready,total,failed}));return()=>audioClient.cancelLesson(lesson.id);},[lesson]);
+  useEffect(()=>{fetch("/api/speaking",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"status",lessonId:storageLessonId})}).then(r=>r.json()).then(data=>{const session=data.session,total=data.tasks?.length??0;if(session?.status==="active")setSpeakingEntry({label:"Continue Speaking Practice",detail:`${session.currentItemIndex+1} of ${total} · about 5–10 minutes`});else if(session?.status==="completed")setSpeakingEntry({label:"Practice Again",detail:`${total} sentences · previous session complete`});else setSpeakingEntry({label:"Start Speaking Practice",detail:`${total||"No"} sentences · about 5–10 minutes`});}).catch(()=>undefined);},[storageLessonId,speakingOpen]);
 
   const handleReviewWord = useCallback((word: string) => {
     setReviewedWords((prev) => {
@@ -164,9 +169,11 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
     ? `https://www.youtube.com/watch?v=${videoId}`
     : null;
 
+  if(speakingOpen)return <SpeakingPractice lessonId={storageLessonId} onExit={()=>setSpeakingOpen(false)}/>;
   return (
     <div>
       <header className="mb-8">
+        <div className="mb-5 rounded-2xl border-2 border-primary bg-highlight p-4 sm:flex sm:items-center sm:justify-between"><div><p className="font-extrabold text-heading">Guided Speaking Ladder</p><p className="text-sm text-body">{speakingEntry.detail}</p></div><button type="button" onClick={()=>setSpeakingOpen(true)} className="mt-3 rounded-full bg-primary px-5 py-3 font-extrabold text-white sm:mt-0">{speakingEntry.label}</button></div>
         {audioProgress&&audioProgress.ready<audioProgress.total?<p role="status" className="mb-3 text-xs font-bold text-muted">Đang chuẩn bị âm thanh: {audioProgress.ready}/{audioProgress.total}{audioProgress.failed?` · ${audioProgress.failed} lỗi`:""}</p>:null}
         <AudioCacheControls />
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">

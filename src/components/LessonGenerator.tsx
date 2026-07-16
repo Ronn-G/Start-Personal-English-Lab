@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import LessonDisplay from "@/components/LessonDisplay";
@@ -42,6 +43,7 @@ export default function LessonGenerator() {
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [openSpeakingOnLoad,setOpenSpeakingOnLoad]=useState(false);
   const saveInFlight = useRef(false);
 
   const prompt = useMemo(() => buildChatGptPrompt(transcript.trim()), [transcript]);
@@ -72,15 +74,16 @@ export default function LessonGenerator() {
     } finally { saveInFlight.current = false; setSaving(false); }
   }
 
-  async function loadSavedLesson(savedLesson: LessonSummary) {
+  async function loadSavedLesson(savedLesson: LessonSummary, openSpeaking=false) {
     setError(null);
     try {
       const stored = await storageClient.getLesson(savedLesson.id);
-      setResult({ lesson: stored.lesson }); setActiveSavedId(stored.id);
+      setOpenSpeakingOnLoad(openSpeaking);setResult({ lesson: stored.lesson }); setActiveSavedId(stored.id);
       setSaveNotice("Đã mở bài học từ SQLite.");
       window.setTimeout(() => setSaveNotice(null), 1800);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Không thể mở bài học."); }
   }
+  async function practiceSpeaking(){setError(null);try{const response=await fetch("/api/speaking",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"daily"})});const data=await response.json() as {lessonId:string|null};if(!data.lessonId){setError("Create a lesson with standalone English sentences before practicing speaking.");return;}const selected=savedLessons.find(x=>x.id===data.lessonId);if(selected)await loadSavedLesson(selected,true);}catch(reason){setError(reason instanceof Error?reason.message:"Could not choose a speaking lesson.");}}
 
   async function deleteSavedLesson(id: string) {
     setError(null);
@@ -164,9 +167,19 @@ export default function LessonGenerator() {
     <div className="mx-auto flex w-full max-w-[1040px] flex-col gap-8 px-5 py-8 sm:px-6 lg:py-10">
       <header className="space-y-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <p className="pt-2 text-sm font-extrabold uppercase tracking-[0.12em] text-primary">
-            Personal English Lab
-          </p>
+          <div className="flex items-center gap-3">
+            <Image
+              src="/app-logo.png"
+              alt="Logo Personal English Lab"
+              width={64}
+              height={64}
+              priority
+              className="size-14 shrink-0 object-contain sm:size-16"
+            />
+            <p className="text-sm font-extrabold uppercase tracking-[0.12em] text-primary">
+              Personal English Lab
+            </p>
+          </div>
           <ThemeSwitcher />
         </div>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -197,6 +210,7 @@ export default function LessonGenerator() {
 
       {!libraryLoading && !libraryError && savedLessons.length > 0 ? (
         <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
+          <button type="button" onClick={()=>void practiceSpeaking()} className="mb-5 w-full rounded-2xl bg-primary px-5 py-4 text-left font-extrabold text-white">Practice Speaking <span className="block text-xs font-medium opacity-80">Continue an active session or practice the lesson that needs it most.</span></button>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-lg font-extrabold text-heading">
@@ -389,10 +403,11 @@ export default function LessonGenerator() {
       {result ? (
         <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
           <LessonDisplay
-            key={activeSavedId ?? result.lesson.title}
+            key={`${activeSavedId ?? result.lesson.title}-${openSpeakingOnLoad?"speaking":"lesson"}`}
             lesson={result.lesson}
             lessonId={activeSavedId}
             videoId={result.videoId}
+            initialSpeakingOpen={openSpeakingOnLoad}
           />
         </section>
       ) : null}

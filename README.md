@@ -1,5 +1,7 @@
 # Personal English Lab
 
+Sprint 6 adds a deterministic five-step **Guided Speaking Ladder** with persistent per-item progress and resumable sessions. See [docs/guided-speaking-ladder.md](docs/guided-speaking-ladder.md).
+
 Sprint 4 adds local JSON backup and restore. Use **Sao lưu và khôi phục** to download a versioned backup, preview an import, then Merge or explicitly confirm Replace all. Backups never include the Gemini API key, machine paths, legacy localStorage, logs, audio, or models. See [docs/backup-and-restore.md](docs/backup-and-restore.md).
 
 Sprint 5 prepares important lesson audio sequentially in the background and caches validated WAV files under the writable application data directory. The cache is limited to 500 MB, can be cleared without affecting learning data, and is never included in backup. See [docs/audio-cache.md](docs/audio-cache.md).

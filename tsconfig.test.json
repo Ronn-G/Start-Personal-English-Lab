@@ -25,6 +25,8 @@
     "src/server/storage/validation.ts",
     "src/server/backup/backup.ts",
     "src/lib/audio-domain.ts",
+    "src/lib/speaking-practice.ts",
+    "src/lib/sentence-check.ts",
     "src/server/audio/audio-cache.ts",
     "test/**/*.test.ts"
   ]

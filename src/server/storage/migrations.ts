@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 5;
+export const CURRENT_DATABASE_VERSION = 7;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -137,6 +137,52 @@ export const MIGRATIONS: readonly Migration[] = [
         error_code TEXT
       ) STRICT;
       CREATE INDEX audio_cache_lru_idx ON audio_cache(status,last_accessed_at);`);
+    },
+  },
+  {
+    version: 6,
+    name: "guided_speaking_ladder",
+    up(database) { database.exec(`
+      CREATE TABLE speaking_progress (
+        lesson_id TEXT NOT NULL, practice_item_id TEXT NOT NULL, source_type TEXT NOT NULL, source_item_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('new','practicing','recalled_with_help','recalled','personalized')),
+        attempt_count INTEGER NOT NULL DEFAULT 0, help_count INTEGER NOT NULL DEFAULT 0,
+        show_answer_count INTEGER NOT NULL DEFAULT 0, recalled_count INTEGER NOT NULL DEFAULT 0,
+        personalized_count INTEGER NOT NULL DEFAULT 0, self_rating TEXT CHECK(self_rating IN ('hard','okay','easy')),
+        first_practiced_at TEXT, last_practiced_at TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY(lesson_id,practice_item_id), FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+      ) STRICT;
+      CREATE INDEX speaking_progress_last_idx ON speaking_progress(last_practiced_at);
+      CREATE TABLE speaking_sessions (
+        id TEXT PRIMARY KEY NOT NULL, lesson_id TEXT NOT NULL, item_ids_json TEXT NOT NULL CHECK(json_valid(item_ids_json)), drafts_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(drafts_json)), checks_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checks_json)),
+        current_item_index INTEGER NOT NULL DEFAULT 0, current_step TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('active','completed','cancelled')), created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, completed_at TEXT, FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+      ) STRICT;
+      CREATE UNIQUE INDEX speaking_one_active_session ON speaking_sessions(lesson_id) WHERE status='active';
+      CREATE INDEX speaking_session_active_idx ON speaking_sessions(lesson_id,status,updated_at);
+    `); },
+  },
+  {
+    version: 7,
+    name: "guided_speaking_ladder_compatibility",
+    up(database) {
+      const progressColumns = new Set(
+        (database.prepare("PRAGMA table_info(speaking_progress)").all() as Array<{ name: string }>).map((column) => column.name),
+      );
+      const sessionColumns = new Set(
+        (database.prepare("PRAGMA table_info(speaking_sessions)").all() as Array<{ name: string }>).map((column) => column.name),
+      );
+      if (!progressColumns.has("source_item_id")) {
+        database.exec("ALTER TABLE speaking_progress ADD COLUMN source_item_id TEXT");
+      }
+      if (!sessionColumns.has("drafts_json")) {
+        database.exec("ALTER TABLE speaking_sessions ADD COLUMN drafts_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(drafts_json))");
+      }
+      if (!sessionColumns.has("checks_json")) {
+        database.exec("ALTER TABLE speaking_sessions ADD COLUMN checks_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checks_json))");
+      }
+      database.exec("UPDATE speaking_progress SET source_item_id = practice_item_id WHERE source_item_id IS NULL OR source_item_id = ''");
     },
   },
 ];

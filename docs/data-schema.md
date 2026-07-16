@@ -34,3 +34,9 @@ SQLite still stores whole documents in `lesson_json` and `progress_json`; item t
 To add a version: increment the relevant integer, add an immutable `vN -> vN+1` migration, retain diagnostics/fixtures for supported inputs, and update producers, validators, repository tests and this document. Database and document versions must never be conflated.
 
 Schema v3 adds `legacy_migration_items` for the idempotent localStorage migration receipt. Sprint 3 previews, transactionally persists, reads back, validates, and only then records completion in `app_metadata`. Legacy lesson/progress keys are not deleted or overwritten. Vocabulary flips and historical speaking feedback remain outside this sprint.
+# Sprint 6 speaking tables
+
+Schema v6 adds `speaking_progress`, keyed by `(lesson_id, practice_item_id)`. It stores source type/item identity, ranked status, monotonic attempts/help/show-answer/recall/personalization counters, explicit self-rating, and practice timestamps. `speaking_sessions` stores item references, current index/step, status, and lifecycle timestamps. A partial unique index allows one active session per lesson.
+# Personal sentence state
+
+Schema v6 uses `speaking_sessions.drafts_json` for optional user-written drafts and `checks_json` for validated sentence-check results plus input hash/time. Both are session/item scoped and never modify lesson JSON.

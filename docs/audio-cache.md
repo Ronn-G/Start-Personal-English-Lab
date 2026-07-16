@@ -11,3 +11,6 @@ SQLite schema v5 stores status and operational metadata in `audio_cache`, never 
 The default limit is 500 MB. After generation, LRU cleanup removes only enough old ready entries, excluding generating and newly-created audio. Cleanup failure does not invalidate the new audio. The lesson UI shows ready/total progress plus cache file count/size and offers a confirmed clear action. Clearing audio does not touch lessons, progress, imports, database or legacy localStorage.
 
 Audio files and `audio_cache` metadata are excluded from backup v1; restore does not delete reusable text-keyed cache. Portable launch already assigns the same writable Local AppData directory to SQLite and audio cache, and build packaging does not copy that directory. Concurrency 2, cache size/voice UI, multi-process locking, low-end hardware throughput and a clean extracted ZIP remain unbenchmarked/unverified. For `KOKORO_UNAVAILABLE` or timeout, verify `http://127.0.0.1:5050/health`, model paths and launcher logs.
+# Speaking preload
+
+Guided Speaking Ladder preloads only the current and next sentence with background priority. It passes the same normalized text and audio configuration used elsewhere, without step or practice IDs in the cache key. Playback and Web Speech fallback still require an explicit user click; preload failure never blocks practice.
