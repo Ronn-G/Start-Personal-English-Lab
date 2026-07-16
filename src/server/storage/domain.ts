@@ -26,6 +26,15 @@ export interface StoredLesson {
   deletedAt?: string;
 }
 
+export interface LessonSummary {
+  id: string;
+  schemaVersion: number;
+  title: string;
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type LessonProgressPayload = LessonProgress;
 
 export interface StoredLessonProgress {
@@ -53,7 +62,7 @@ export interface UpdateLessonInput {
 }
 
 export interface LessonRepository {
-  listLessons(): Promise<StoredLesson[]>;
+  listLessons(): Promise<LessonSummary[]>;
   getLesson(id: string): Promise<StoredLesson | null>;
   createLesson(input: CreateLessonInput): Promise<StoredLesson>;
   updateLesson(id: string, input: UpdateLessonInput): Promise<StoredLesson>;

@@ -91,7 +91,7 @@ npm.cmd run smoke:storage
 ## SQLite storage (Sprint 1)
 
 Tang SQLite server-side da co API va migration, nhung giao dien hien tai van dung
-localStorage. Sprint nay khong tu dong di chuyen hoac xoa bai hoc cu.
+SQLite schema v3 là nguồn dữ liệu chính cho thư viện bài học và quiz progress. Dữ liệu localStorage cũ chỉ được chuyển sau dry-run và xác nhận; các key cũ không bị xóa hoặc ghi đè. Xem `docs/localstorage-migration.md`.
 
 Development mac dinh tao database trong `.data`. Co the chon thu muc ghi duoc:
 

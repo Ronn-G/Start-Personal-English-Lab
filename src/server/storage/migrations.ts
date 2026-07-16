@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 2;
+export const CURRENT_DATABASE_VERSION = 3;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -78,6 +78,28 @@ export const MIGRATIONS: readonly Migration[] = [
           updateProgress.run(JSON.stringify(migrated.data), row.id);
         }
       }
+    },
+  },
+  {
+    version: 3,
+    name: "legacy_localstorage_migration_receipts",
+    up(database) {
+      database.exec(`
+        CREATE TABLE legacy_migration_items (
+          migration_id TEXT NOT NULL,
+          legacy_fingerprint TEXT NOT NULL,
+          lesson_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('migrated', 'existing', 'failed')),
+          diagnostics_json TEXT NOT NULL CHECK (json_valid(diagnostics_json)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (migration_id, legacy_fingerprint),
+          FOREIGN KEY (lesson_id) REFERENCES lessons(id)
+        ) STRICT;
+
+        CREATE UNIQUE INDEX legacy_migration_lesson_idx
+          ON legacy_migration_items(migration_id, lesson_id);
+      `);
     },
   },
 ];

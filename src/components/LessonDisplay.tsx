@@ -7,6 +7,8 @@ import GrammarSection from "@/components/lesson/GrammarSection";
 import IdiomsSection from "@/components/lesson/IdiomsSection";
 import QuizSection from "@/components/lesson/QuizSection";
 import VocabularyCards from "@/components/lesson/VocabularyCards";
+import { CURRENT_PROGRESS_SCHEMA_VERSION, type LessonProgress } from "@/lib/lesson-progress";
+import { storageClient } from "@/lib/storage-client";
 import type { Lesson } from "@/types/lesson";
 
 type LessonTab = "vocabulary" | "idioms" | "grammar" | "practice" | "quiz";
@@ -25,49 +27,18 @@ interface LessonDisplayProps {
   videoId?: string;
 }
 
-interface LessonProgress {
-  answeredQuestions: number[];
-}
-
-function buildProgressKey(lesson: Lesson, lessonId?: string) {
-  return `personal-english-lab-progress:${lessonId ?? `${lesson.title}:${lesson.summary}`}`;
-}
-
-function readLessonProgress(progressKey: string): LessonProgress {
-  if (typeof window === "undefined") {
-    return {
-      answeredQuestions: [],
-    };
-  }
-
-  try {
-    const raw = window.localStorage.getItem(progressKey);
-    if (!raw) {
-      return {
-        answeredQuestions: [],
-      };
-    }
-
-    const parsed = JSON.parse(raw) as Partial<LessonProgress>;
-
-    return {
-      answeredQuestions: parsed.answeredQuestions ?? [],
-    };
-  } catch {
-    return {
-      answeredQuestions: [],
-    };
-  }
+function emptyProgress(lessonId: string, timestamp: string): LessonProgress {
+  return { lessonId, progressVersion: CURRENT_PROGRESS_SCHEMA_VERSION, quizItems: {}, learningItems: {}, visitedSections: ["vocabulary"], practiceHistory: [], createdAt: timestamp, updatedAt: timestamp };
 }
 
 export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDisplayProps) {
-  const progressKey = buildProgressKey(lesson, lessonId);
-  const savedProgress = readLessonProgress(progressKey);
+  const storageLessonId = lessonId ?? lesson.id;
   const [activeTab, setActiveTab] = useState<LessonTab>("vocabulary");
   const [reviewedWords, setReviewedWords] = useState<Set<string>>(new Set());
-  const [answeredQuestions, setAnsweredQuestions] = useState<Set<number>>(
-    new Set(savedProgress.answeredQuestions),
-  );
+  const [progress, setProgress] = useState<LessonProgress>(() => emptyProgress(storageLessonId, lesson.createdAt));
+  const [progressLoading, setProgressLoading] = useState(true);
+  const [progressError, setProgressError] = useState<string | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const [visitedTabs, setVisitedTabs] = useState<Set<LessonTab>>(
     new Set<LessonTab>(["vocabulary"]),
   );
@@ -104,12 +75,12 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
   }, [lesson.summary, summaryExpanded]);
 
   useEffect(() => {
-    const progress: LessonProgress = {
-      answeredQuestions: Array.from(answeredQuestions),
-    };
-
-    window.localStorage.setItem(progressKey, JSON.stringify(progress));
-  }, [answeredQuestions, progressKey]);
+    let active = true;
+    storageClient.getLessonProgress(storageLessonId).then((stored) => {
+      if (active) setProgress(stored?.progress ?? emptyProgress(storageLessonId, lesson.createdAt));
+    }).catch((reason) => { if (active) setProgressError(reason instanceof Error ? reason.message : "Không thể tải tiến độ."); }).finally(() => { if (active) setProgressLoading(false); });
+    return () => { active = false; };
+  }, [lesson.createdAt, storageLessonId]);
 
   const handleReviewWord = useCallback((word: string) => {
     setReviewedWords((prev) => {
@@ -123,16 +94,19 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
     });
   }, [setReviewedWords]);
 
-  const handleAnswerQuestion = useCallback((index: number) => {
-    setAnsweredQuestions((prev) => {
-      if (prev.has(index)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.add(index);
+  const handleAnswerQuestion = useCallback((question: Lesson["quiz"][number], selectedAnswer: number) => {
+    setProgress((previous) => {
+      const now = new Date().toISOString();
+      const old = previous.quizItems[question.id];
+      const next: LessonProgress = { ...previous, updatedAt: now, quizItems: { ...previous.quizItems, [question.id]: { itemId: question.id, selectedAnswer, correct: selectedAnswer === question.correctAnswer, attemptCount: (old?.attemptCount ?? 0) + 1, answeredAt: now, completed: true } } };
+      setProgressError(null);
+      saveQueue.current = saveQueue.current.catch(() => undefined).then(async () => {
+        try { await storageClient.saveLessonProgress(storageLessonId, next); }
+        catch (reason) { setProgressError(reason instanceof Error ? `Chưa lưu tiến độ: ${reason.message}` : "Chưa lưu tiến độ."); }
+      });
       return next;
     });
-  }, []);
+  }, [storageLessonId]);
 
   function selectTab(id: LessonTab) {
     setActiveTab(id);
@@ -151,7 +125,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
       case "vocabulary":
         return { done: reviewedWords.size, total: lesson.vocabulary.length };
       case "quiz":
-        return { done: answeredQuestions.size, total: lesson.quiz.length };
+        return { done: Object.keys(progress.quizItems).length, total: lesson.quiz.length };
       case "idioms":
         return {
           done: visitedTabs.has("idioms") ? lesson.idiomsAndSlang.length : 0,
@@ -349,6 +323,8 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
       </div>
 
       <div className="min-h-[320px]">
+        {progressLoading ? <p className="mb-4 text-sm font-bold text-muted">Đang tải tiến độ quiz...</p> : null}
+        {progressError ? <div role="alert" className="mb-4 rounded-xl border-2 border-wrong bg-wrong-light p-3 text-sm font-bold text-wrong">{progressError} Tiến độ trên màn hình vẫn được giữ. <button type="button" className="underline" onClick={() => { setProgressError(null); void storageClient.saveLessonProgress(storageLessonId, progress).catch((reason) => setProgressError(reason instanceof Error ? reason.message : "Vẫn chưa lưu được.")); }}>Thử lại</button></div> : null}
         {activeTab === "vocabulary" ? (
           <VocabularyCards
             items={lesson.vocabulary}
@@ -374,7 +350,9 @@ export default function LessonDisplay({ lesson, lessonId, videoId }: LessonDispl
 
         {activeTab === "quiz" ? (
           <QuizSection
+            key={`${storageLessonId}-${progressLoading ? "loading" : "ready"}`}
             questions={lesson.quiz}
+            progress={progress.quizItems}
             onAnswer={handleAnswerQuestion}
           />
         ) : null}

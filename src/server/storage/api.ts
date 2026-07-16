@@ -2,13 +2,19 @@ import { NextResponse } from "next/server";
 
 import { StorageError } from "./errors";
 
-export async function readJsonBody(request: Request): Promise<unknown> {
+export async function readJsonBody(request: Request, maxBytes = 1_000_000): Promise<unknown> {
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
     throw new StorageError("VALIDATION_ERROR", "Request phải dùng application/json.");
   }
   try {
-    return await request.json();
+    const declaredLength = Number(request.headers.get("content-length") ?? 0);
+    if (declaredLength > maxBytes) throw new StorageError("VALIDATION_ERROR", "Request quá lớn.");
+    const raw = await request.text();
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+      throw new StorageError("VALIDATION_ERROR", "Request quá lớn.");
+    }
+    return JSON.parse(raw) as unknown;
   } catch (error) {
     throw new StorageError("VALIDATION_ERROR", "JSON body không hợp lệ.", {
       cause: error,

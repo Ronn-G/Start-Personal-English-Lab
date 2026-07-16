@@ -7,6 +7,7 @@ import {
   PROGRESS_SCHEMA_VERSION,
   type CreateLessonInput,
   type LessonProgressPayload,
+  type LessonSummary,
   type LessonSource,
   type StorageRepository,
   type StoredLesson,
@@ -101,11 +102,18 @@ function sourceParameters(source: LessonSource): unknown[] {
 export class SqliteStorageRepository implements StorageRepository {
   constructor(private readonly database: DatabaseSync) {}
 
-  async listLessons(): Promise<StoredLesson[]> {
+  async listLessons(): Promise<LessonSummary[]> {
     const rows = this.database
-      .prepare("SELECT * FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC")
-      .all() as LessonRow[];
-    return rows.map(mapLessonRow);
+      .prepare("SELECT id, schema_version, title, summary, created_at, updated_at FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC")
+      .all() as Array<{ id: string; schema_version: number; title: string; summary: string; created_at: string; updated_at: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      schemaVersion: row.schema_version,
+      title: row.title,
+      summary: row.summary,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
   }
 
   async getLesson(id: string): Promise<StoredLesson | null> {

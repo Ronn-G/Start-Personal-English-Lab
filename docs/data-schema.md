@@ -1,6 +1,6 @@
 # Data schemas (Sprint 2)
 
-Three independent integer versions exist: SQLite database **2** (`PRAGMA user_version`), Lesson document **1** (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1** (`CURRENT_PROGRESS_SCHEMA_VERSION`).
+Three independent integer versions exist: SQLite database **3** (`PRAGMA user_version`), Lesson document **1** (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1** (`CURRENT_PROGRESS_SCHEMA_VERSION`).
 
 ## Lesson v1 and stable IDs
 
@@ -13,7 +13,7 @@ raw text -> strip fences -> JSON parse -> legacy-version check -> immutable migr
 -> assign/repair IDs -> canonical validation -> typed result + diagnostics
 ```
 
-Manual paste and automatic Gemini generation both use it. Malformed JSON is never silently rewritten. Legacy v0 normalization prefers wrapper timestamps; without one it uses fixed fallback `1970-01-01T00:00:00.000Z`, so repeated reads do not invent time. Future Sprint 3 must persist a normalized result before treating generated IDs as durable.
+Manual paste and automatic Gemini generation both use it. Malformed JSON is never silently rewritten. Legacy v0 normalization prefers wrapper timestamps; without one it uses fixed fallback `1970-01-01T00:00:00.000Z`, so repeated reads do not invent time. Sprint 3 persists each successfully normalized result transactionally before treating generated IDs as durable.
 
 ## Progress v1
 
@@ -29,4 +29,4 @@ SQLite still stores whole documents in `lesson_json` and `progress_json`; item t
 
 To add a version: increment the relevant integer, add an immutable `vN -> vN+1` migration, retain diagnostics/fixtures for supported inputs, and update producers, validators, repository tests and this document. Database and document versions must never be conflated.
 
-Not migrated in Sprint 2: existing localStorage lessons/progress or keys, vocabulary flips, visited tabs, quiz score and historical speaking feedback. No legacy key is automatically deleted or overwritten; Sprint 3 must preview, persist and verify migration before switching UI source of truth.
+Schema v3 adds `legacy_migration_items` for the idempotent localStorage migration receipt. Sprint 3 previews, transactionally persists, reads back, validates, and only then records completion in `app_metadata`. Legacy lesson/progress keys are not deleted or overwritten. Vocabulary flips and historical speaking feedback remain outside this sprint.

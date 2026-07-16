@@ -14,11 +14,13 @@
     "src/types/node-sqlite.d.ts",
     "src/lib/lesson-schema.ts",
     "src/lib/lesson-progress.ts",
+    "src/lib/legacy-storage-reader.ts",
     "src/server/storage/data-directory.ts",
     "src/server/storage/database.ts",
     "src/server/storage/domain.ts",
     "src/server/storage/errors.ts",
     "src/server/storage/migrations.ts",
+    "src/server/storage/legacy-migration.ts",
     "src/server/storage/sqlite-repository.ts",
     "src/server/storage/validation.ts",
     "test/**/*.test.ts"

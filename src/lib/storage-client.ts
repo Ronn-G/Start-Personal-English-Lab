@@ -1,10 +1,15 @@
 import type {
   CreateLessonInput,
+  LessonSummary,
   LessonProgressPayload,
   StoredLesson,
   StoredLessonProgress,
   UpdateLessonInput,
 } from "@/server/storage/domain";
+import type { LegacyMigrationRecord } from "@/lib/legacy-storage-reader";
+import type { MigrationPreview, MigrationStatus } from "@/server/storage/legacy-migration";
+
+const LEGACY_MIGRATION_ID = "localstorage-lessons-v1";
 
 interface StorageApiErrorBody {
   error?: string;
@@ -46,8 +51,8 @@ function lessonUrl(id: string): string {
 }
 
 export const storageClient = {
-  async listLessons(): Promise<StoredLesson[]> {
-    const data = await requestJson<{ lessons: StoredLesson[] }>("/api/storage/lessons");
+  async listLessons(): Promise<LessonSummary[]> {
+    const data = await requestJson<{ lessons: LessonSummary[] }>("/api/storage/lessons");
     return data.lessons;
   },
 
@@ -96,5 +101,25 @@ export const storageClient = {
       },
     );
     return data.progress;
+  },
+
+  async getMigrationStatus(): Promise<MigrationStatus> {
+    const data = await requestJson<{ status: MigrationStatus }>("/api/storage/migration");
+    return data.status;
+  },
+
+  async previewLegacyMigration(records: LegacyMigrationRecord[]): Promise<MigrationPreview> {
+    const data = await requestJson<{ preview: MigrationPreview }>("/api/storage/migration", {
+      method: "POST",
+      body: JSON.stringify({ action: "dry-run", migrationId: LEGACY_MIGRATION_ID, records }),
+    });
+    return data.preview;
+  },
+
+  async commitLegacyMigration(records: LegacyMigrationRecord[]): Promise<{ preview: MigrationPreview; status: MigrationStatus }> {
+    return requestJson("/api/storage/migration", {
+      method: "POST",
+      body: JSON.stringify({ action: "commit", migrationId: LEGACY_MIGRATION_ID, records }),
+    });
   },
 };

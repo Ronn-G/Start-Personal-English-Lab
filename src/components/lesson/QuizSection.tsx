@@ -3,10 +3,12 @@
 import { useState } from "react";
 
 import type { QuizQuestion } from "@/types/lesson";
+import type { QuizItemProgress } from "@/lib/lesson-progress";
 
 interface QuizSectionProps {
   questions: QuizQuestion[];
-  onAnswer?: (index: number) => void;
+  progress?: Record<string, QuizItemProgress>;
+  onAnswer?: (question: QuizQuestion, selectedAnswer: number) => void;
 }
 
 function CelebrationOverlay() {
@@ -30,12 +32,13 @@ function CelebrationOverlay() {
   );
 }
 
-export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
+export default function QuizSection({ questions, progress = {}, onAnswer }: QuizSectionProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
-  const [score, setScore] = useState(0);
+  const [selectedOption, setSelectedOption] = useState<number | null>(progress[questions[0]?.id]?.selectedAnswer ?? null);
+  const [score, setScore] = useState(Object.values(progress).filter((item) => item.correct).length);
   const [isFinished, setIsFinished] = useState(false);
   const [showCelebration, setShowCelebration] = useState(false);
+  const [replaying, setReplaying] = useState(false);
 
   const currentQuestion = questions[currentIndex];
   const hasAnswered = selectedOption !== null;
@@ -43,6 +46,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
     hasAnswered && selectedOption === currentQuestion?.correctAnswer;
 
   function resetQuiz() {
+    setReplaying(true);
     setCurrentIndex(0);
     setSelectedOption(null);
     setScore(0);
@@ -56,7 +60,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
     }
 
     setSelectedOption(optionIndex);
-    onAnswer?.(currentIndex);
+    onAnswer?.(currentQuestion, optionIndex);
 
     if (optionIndex === currentQuestion.correctAnswer) {
       setScore((value) => value + 1);
@@ -72,8 +76,9 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
       return;
     }
 
-    setCurrentIndex((value) => value + 1);
-    setSelectedOption(null);
+    const nextIndex = currentIndex + 1;
+    setCurrentIndex(nextIndex);
+    setSelectedOption(replaying ? null : (progress[questions[nextIndex]?.id]?.selectedAnswer ?? null));
   }
 
   if (isFinished) {
@@ -104,7 +109,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
     );
   }
 
-  const progress =
+  const progressPercent =
     ((currentIndex + (hasAnswered ? 1 : 0)) / questions.length) * 100;
 
   return (
@@ -121,7 +126,7 @@ export default function QuizSection({ questions, onAnswer }: QuizSectionProps) {
         <div className="h-4 overflow-hidden rounded-full bg-border">
           <div
             className="h-full rounded-full bg-gradient-accent transition-all duration-500 ease-smooth"
-            style={{ width: `${progress}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
       </div>

@@ -1,6 +1,6 @@
 # SQLite Storage Architecture
 
-> Sprint 1 establishes the long-term storage boundary. The current UI still reads and writes lessons/progress in localStorage; no user data is migrated in this sprint.
+> Sprint 3 makes SQLite the UI source of truth and adds an explicit, previewed localStorage migration. Legacy browser data remains untouched as a temporary rollback copy.
 
 ## 1. Why SQLite
 
@@ -15,7 +15,7 @@ The selected driver is Node.js built-in `node:sqlite` using `DatabaseSync`. It a
 ## 2. Storage boundaries
 
 ```text
-React UI (unchanged in Sprint 1; still uses localStorage)
+React UI (lesson library and quiz progress use SQLite)
         |
 future opt-in
         v
@@ -58,9 +58,11 @@ Priority:
 
 The database filename is `personal-english-lab.sqlite3`. The portable launcher explicitly sets `PERSONAL_ENGLISH_LAB_DATA_DIR` to Local AppData, so an app update or re-extraction does not overwrite user data. The database, WAL/SHM/journal files and `.data` are gitignored. Build scripts do not copy a development database into the artifact.
 
-## 4. Database schema version 2
+## 4. Database schema version 3
 
 Migration 2 transactionally converts version-1 database JSON to canonical Lesson v1 and Progress v1 while retaining unknown legacy fields. This is database migration only; localStorage remains untouched for explicit Sprint 3 migration. New repository writes require canonical documents.
+
+Migration 3 transactionally adds `legacy_migration_items`, keyed by migration ID and SHA-256 legacy fingerprint. It retains the mapped lesson UUID, item status, diagnostics, and timestamps. `app_metadata` stores the authoritative migration status and aggregate receipt.
 
 SQLite `PRAGMA user_version` is the authoritative migration counter. `app_metadata.schema_version` mirrors it for diagnostics.
 
@@ -129,9 +131,9 @@ Sprint 1 does not change these keys or their behavior:
 - `personal-english-lab-progress:*`
 - `personal-english-lab-theme`
 
-No localStorage lesson is automatically copied, changed or deleted. The existing UI still uses the 30-item localStorage library by default.
+No localStorage lesson is automatically copied, changed or deleted. The UI now uses SQLite for lesson CRUD and UUID-keyed quiz progress; the migration banner appears only when legacy records exist and completion has not been recorded.
 
-Planned Sprint 3 migration:
+Implemented Sprint 3 migration:
 
 1. Read and preserve the raw localStorage payload as a recoverable backup.
 2. Validate every legacy lesson/progress record without mutating either store.

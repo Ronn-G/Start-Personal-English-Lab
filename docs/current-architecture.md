@@ -1,6 +1,6 @@
 # Personal English Lab - Current Architecture Baseline
 
-> Baseline khảo sát ngày 2026-07-15 cho source trong `fluent/`. Sprint 1 đã bổ sung nền tảng SQLite song song; UI vẫn dùng localStorage và chưa migrate dữ liệu cũ.
+> Cập nhật Sprint 3 ngày 2026-07-16: SQLite schema v3 là source of truth cho thư viện Lesson và quiz progress; localStorage legacy chỉ được đọc cho migration có preview/xác nhận và không bị sửa/xóa.
 
 ## 1. Phạm vi và trạng thái repository
 
