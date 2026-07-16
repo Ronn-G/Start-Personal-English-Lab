@@ -23,6 +23,7 @@
     "src/server/storage/legacy-migration.ts",
     "src/server/storage/sqlite-repository.ts",
     "src/server/storage/validation.ts",
+    "src/server/backup/backup.ts",
     "test/**/*.test.ts"
   ]
 }

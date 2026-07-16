@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 3;
+export const CURRENT_DATABASE_VERSION = 4;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -99,6 +99,26 @@ export const MIGRATIONS: readonly Migration[] = [
 
         CREATE UNIQUE INDEX legacy_migration_lesson_idx
           ON legacy_migration_items(migration_id, lesson_id);
+      `);
+    },
+  },
+  {
+    version: 4,
+    name: "backup_import_receipts",
+    up(database) {
+      database.exec(`
+        CREATE TABLE import_receipts (
+          import_id TEXT PRIMARY KEY NOT NULL,
+          imported_at TEXT NOT NULL,
+          source_fingerprint TEXT NOT NULL,
+          mode TEXT NOT NULL CHECK (mode IN ('merge', 'replace')),
+          lesson_count INTEGER NOT NULL,
+          progress_count INTEGER NOT NULL,
+          result TEXT NOT NULL CHECK (result IN ('success', 'failed')),
+          warning_count INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX import_receipts_fingerprint_idx
+          ON import_receipts(source_fingerprint, imported_at DESC);
       `);
     },
   },

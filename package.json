@@ -12,7 +12,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsc -p tsconfig.test.json && node --test \".test-dist/test/**/*.test.js\"",
-    "smoke:storage": "node tools/smoke_storage.mjs"
+    "smoke:storage": "node tools/smoke_storage.mjs",
+    "smoke:backup": "npm.cmd test -- --test-name-pattern=backup"
   },
   "dependencies": {
     "next": "16.2.7",

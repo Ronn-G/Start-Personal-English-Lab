@@ -1,5 +1,7 @@
 # SQLite Storage Architecture
 
+> Sprint 4 uses database schema v4. Migration 4 transactionally creates `import_receipts` with source SHA-256 fingerprint, mode, counts, result and warning count. Export reads active lessons and progress in one transaction. Merge/replace write and verify in one `BEGIN IMMEDIATE` transaction; any failure rolls back. Backup JSON blobs and secrets are never stored.
+
 > Sprint 3 makes SQLite the UI source of truth and adds an explicit, previewed localStorage migration. Legacy browser data remains untouched as a temporary rollback copy.
 
 ## 1. Why SQLite

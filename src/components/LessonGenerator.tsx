@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import LessonDisplay from "@/components/LessonDisplay";
 import LegacyMigrationPanel from "@/components/LegacyMigrationPanel";
+import BackupRestorePanel from "@/components/BackupRestorePanel";
 import ThemeSwitcher from "@/components/ThemeSwitcher";
 import { buildLessonPrompt } from "@/lib/lesson-prompt";
 import { formatLessonDiagnostics, parseLessonText } from "@/lib/lesson-schema";
@@ -187,6 +188,7 @@ export default function LessonGenerator() {
           </button>
         </div>
       </header>
+      <BackupRestorePanel lessonCount={savedLessons.length} onImported={refreshLibrary} />
 
       <LegacyMigrationPanel onMigrated={refreshLibrary} />
 

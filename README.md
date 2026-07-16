@@ -1,5 +1,7 @@
 # Personal English Lab
 
+Sprint 4 adds local JSON backup and restore. Use **Sao lưu và khôi phục** to download a versioned backup, preview an import, then Merge or explicitly confirm Replace all. Backups never include the Gemini API key, machine paths, legacy localStorage, logs, audio, or models. See [docs/backup-and-restore.md](docs/backup-and-restore.md).
+
 App ca nhan de tao bai hoc tieng Anh tu transcript YouTube ban tu copy.
 
 ## Cach dung voi ChatGPT Plus
