@@ -86,6 +86,11 @@ export default function LessonGenerator() {
   async function practiceSpeaking(){setError(null);try{const response=await fetch("/api/speaking",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"daily"})});const data=await response.json() as {lessonId:string|null};if(!data.lessonId){setError("Create a lesson with standalone English sentences before practicing speaking.");return;}const selected=savedLessons.find(x=>x.id===data.lessonId);if(selected)await loadSavedLesson(selected,true);}catch(reason){setError(reason instanceof Error?reason.message:"Could not choose a speaking lesson.");}}
 
   async function deleteSavedLesson(id: string) {
+    const confirmed = window.confirm(
+      "Bạn có chắc muốn xóa bài học này không?\n\nBài học sẽ bị xóa khỏi danh sách và tiến độ liên quan sẽ không còn hiển thị trong ứng dụng.",
+    );
+    if (!confirmed) return;
+
     setError(null);
     try {
       await storageClient.deleteLesson(id);
