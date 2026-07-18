@@ -53,11 +53,11 @@ export default function LegacyMigrationPanel({ onMigrated }: { onMigrated: () =>
       <p className="mt-2 text-sm leading-6 text-body">Ứng dụng đã chuyển sang hệ thống lưu trữ mới. Hãy chuyển các bài học cũ sang SQLite để dữ liệu được lưu ổn định hơn.</p>
       <p className="mt-2 text-sm font-bold text-heading">Phát hiện {legacy.detectedCount} bài. Dữ liệu localStorage cũ sẽ được giữ nguyên.</p>
       {legacy.diagnostics.length > 0 ? <div className="mt-3 rounded-xl border-2 border-border bg-card p-3 text-sm text-body">
-        {legacy.diagnostics.slice(0, 8).map((diagnostic, index) => <p key={`${diagnostic.code}-${diagnostic.recordIndex ?? index}`}>{diagnostic.code}: {diagnostic.message}</p>)}
+        {legacy.diagnostics.slice(0, 8).map((diagnostic, index) => <p key={`${diagnostic.code}-${diagnostic.recordIndex ?? index}`}>{diagnostic.message}</p>)}
       </div> : null}
       {preview ? <div className="mt-4 rounded-xl border-2 border-border bg-card p-4 text-sm leading-6 text-body">
         <p>Hợp lệ: {preview.validLessons} · Đã có: {preview.existingLessons} · Lỗi: {preview.invalidLessons} · Progress: {preview.convertedProgress}</p>
-        {preview.items.flatMap((item) => item.diagnostics).slice(0, 8).map((diagnostic, index) => <p key={`${diagnostic.code}-${index}`} className="mt-1 text-muted">{diagnostic.code}: {diagnostic.message}</p>)}
+        {preview.items.flatMap((item) => item.diagnostics).slice(0, 8).map((diagnostic, index) => <p key={`${diagnostic.code}-${index}`} className="mt-1 text-muted">{diagnostic.message}</p>)}
       </div> : null}
       {error ? <p role="alert" className="mt-3 text-sm font-bold text-wrong">{error}</p> : null}
       {status?.status === "completed-with-warnings" ? <p className="mt-3 text-sm font-bold text-heading">Chuyển dữ liệu xong với cảnh báo. Dữ liệu cũ vẫn được giữ tạm thời.</p> : null}
