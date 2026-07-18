@@ -13,7 +13,7 @@ import { CURRENT_DATABASE_VERSION, MIGRATIONS, runMigrations } from "../src/serv
 import { SqliteStorageRepository } from "../src/server/storage/sqlite-repository";
 import { commitLegacyMigration, getLegacyMigrationStatus, lessonFingerprint, previewLegacyMigration } from "../src/server/storage/legacy-migration";
 import type { Lesson } from "../src/types/lesson";
-import { exportBackup, importBackup, mergeProgress, previewImport, validateBackup } from "../src/server/backup/backup";
+import { BACKUP_FORMAT, exportBackup, importBackup, mergeProgress, previewImport, validateBackup } from "../src/server/backup/backup";
 import {AUDIO_DEFAULTS,AudioQueue,canonicalAudioInput,normalizeAudioText,selectLessonAudioPreloadItems} from "../src/lib/audio-domain";
 import {AudioCacheService,audioCacheKey,cleanupPlan,validWav} from "../src/server/audio/audio-cache";
 import {buildRecallMask,buildSpeakingSession,extractKeywords,extractPracticeCandidates,normalizeSpeakingText,personalizationPattern,personalizationScore} from "../src/lib/speaking-practice";
@@ -62,6 +62,19 @@ test("critical commit failure rolls back lessons/receipts and records failed sta
 test("malformed legacy stores and progress remain visible as diagnostics",()=>{ const malformedStore=readLegacyStorage({getItem(key:string){return key===LEGACY_LESSONS_KEY?"{broken":null;}} as Storage); assert.equal(malformedStore.records.length,0); assert.equal(malformedStore.diagnostics[0].code,"MALFORMED_LESSON_STORE"); const wrapper={id:"legacy-bad-progress",lesson:legacyLesson()}; const values=new Map([[LEGACY_LESSONS_KEY,JSON.stringify([wrapper])],[`${LEGACY_PROGRESS_PREFIX}legacy-bad-progress`,"{broken"]]); const result=readLegacyStorage({getItem(key:string){return values.get(key)??null;}} as Storage); assert.equal(result.records[0].progressUnreadable,true); const db=new DatabaseSync(":memory:"); runMigrations(db); const preview=previewLegacyMigration(db,result.records); assert.ok(preview.items[0].diagnostics.some((item)=>item.code==="MALFORMED_LEGACY_PROGRESS")); assert.equal(preview.warningCount,1); db.close(); });
 
 test("backup export validates checksum and excludes deleted lessons and secrets",async()=>{const db=new DatabaseSync(":memory:");runMigrations(db);const repo=new SqliteStorageRepository(db);const item=lesson();await repo.createLesson({id:item.id,lesson:item});await repo.saveLessonProgress(item.id,progress(item));await repo.setSetting("GEMINI_API_KEY","secret");const backup=exportBackup(db,"0.1.0");assert.equal(validateBackup(backup).diagnostics.length,0);assert.equal(JSON.stringify(backup).includes("secret"),false);assert.equal(backup.lessons.length,1);const damaged=structuredClone(backup);damaged.lessons[0].summary="tampered";assert.equal(validateBackup(damaged).diagnostics[0].code,"CHECKSUM_MISMATCH");db.close();});
+test("backup validation returns readable Vietnamese diagnostics without mojibake",()=>{
+  const cases: Array<{value: unknown; code: string; message: string}> = [
+    { value: "not-an-object", code: "INVALID_BACKUP", message: "Backup phải là một đối tượng JSON." },
+    { value: {}, code: "INVALID_FORMAT", message: "Sai định dạng backup." },
+    { value: { backupFormat: BACKUP_FORMAT }, code: "UNSUPPORTED_BACKUP_VERSION", message: "Chỉ hỗ trợ backup version 1." },
+  ];
+  const mojibake = /Ã|Â|Ä|áº|á»/;
+  for (const item of cases) {
+    const diagnostics = validateBackup(item.value).diagnostics;
+    assert.ok(diagnostics.some((diagnostic) => diagnostic.code === item.code && diagnostic.message === item.message));
+    assert.equal(diagnostics.some((diagnostic) => mojibake.test(diagnostic.message)), false);
+  }
+});
 test("backup dry-run is read-only; merge retry is idempotent; replace rolls back",()=>{const source=new DatabaseSync(":memory:");runMigrations(source);const item=lesson();source.prepare("INSERT INTO lessons(id,schema_version,title,summary,lesson_json,created_at,updated_at,was_truncated) VALUES(?,?,?,?,?,?,?,0)").run(item.id,1,item.title,item.summary,JSON.stringify(item),item.createdAt,item.updatedAt);const backup=exportBackup(source,"0.1.0");const target=new DatabaseSync(":memory:");runMigrations(target);const before=(target.prepare("SELECT total_changes() count").get() as {count:number}).count;assert.equal(previewImport(target,backup).valid,true);assert.equal((target.prepare("SELECT total_changes() count").get() as {count:number}).count,before);importBackup(target,backup,"merge");assert.equal((target.prepare("SELECT COUNT(*) count FROM lessons").get() as {count:number}).count,1);importBackup(target,backup,"merge",true);assert.equal((target.prepare("SELECT COUNT(*) count FROM lessons").get() as {count:number}).count,1);target.exec("CREATE TRIGGER fail_replace BEFORE INSERT ON lessons BEGIN SELECT RAISE(ABORT,'forced'); END");assert.throws(()=>importBackup(target,backup,"replace",true));assert.equal((target.prepare("SELECT COUNT(*) count FROM lessons").get() as {count:number}).count,1);source.close();target.close();});
 test("backup merge progress never loses attempts or completion",()=>{const item=lesson();const older=progress(item);const id=item.quiz[0].id;older.quizItems[id]={itemId:id,selectedAnswer:0,correct:false,attemptCount:4,answeredAt:"2026-01-01T00:00:00.000Z",completed:true};const newer={...progress(item),updatedAt:"2026-02-01T00:00:00.000Z",quizItems:{[id]:{itemId:id,selectedAnswer:1,correct:true,attemptCount:1,answeredAt:"2026-02-01T00:00:00.000Z",completed:false}}};const merged=mergeProgress(older,newer);assert.equal(merged.quizItems[id].attemptCount,4);assert.equal(merged.quizItems[id].completed,true);});
 
@@ -87,3 +100,16 @@ test("speaking compatibility migration repairs an intermediate v6 database",()=>
 test("keyword chunks preserve meaning, target phrases and sentence order",()=>{const candidate={id:"p",lessonId:"l",sourceType:"example" as const,sourceItemId:"s",sourceText:"",text:"I need to stop focusing on the end goal and enjoy the process.",targetPhrase:"enjoy the process"};const expected=["stop focusing","end goal","enjoy the process"];assert.deepEqual(extractKeywords(candidate),expected);assert.deepEqual(extractKeywords(candidate),expected);assert.equal(extractKeywords(candidate).includes("need"),false);assert.ok(extractKeywords(candidate).join(" ").length<candidate.text.length);assert.ok(extractKeywords({...candidate,text:"Keep going.",targetPhrase:"keep going"}).length>0);});
 test("personalize uses specific replaceable blanks before general rules",()=>{const base={id:"p",lessonId:"l",sourceType:"example" as const,sourceItemId:"s",sourceText:"",targetPhrase:undefined};assert.equal(personalizationPattern({...base,text:"I need to stop focusing on the end goal and enjoy the process."}),"I need to stop focusing on ______ and start ______.");assert.equal(personalizationPattern({...base,text:"I need to finish my work."}),"I need to ______.");assert.equal(personalizationPattern({...base,text:"I want to travel more."}),"I want to ______ because ______.");assert.equal(personalizationPattern({...base,text:"I’m trying to practice daily."}),"I’m trying to ______ by ______.");for(const text of ["I need to finish my work.","I want to travel more."])assert.equal(personalizationPattern({...base,text}).includes(`${text.slice(0,-1)} ______`),false);});
 test("speaking UI names sentence and step progress and uses spoken-action labels",()=>{const source=readFileSync(join(process.cwd(),"src/components/SpeakingPractice.tsx"),"utf8");for(const text of ["Sentence {index+1} of {data.tasks.length}","Step {stepNumber} of {activeSteps.length}","Read the sentence aloud.","I read it aloud","Say the complete sentence aloud before showing the answer.","Say the idea again using only these keywords.","You do not need to use the exact original words.","I added one more sentence","Explain why this matters to you or give a real example."])assert.ok(source.includes(text),`missing ladder UX: ${text}`);assert.equal(source.includes(">Next<"),false);});
+test("lesson deletion requires confirmation before the storage call",()=>{
+  const source=readFileSync(join(process.cwd(),"src/components/LessonGenerator.tsx"),"utf8");
+  const confirmation=source.indexOf("const confirmed = window.confirm(");
+  const cancellation=source.indexOf("if (!confirmed) return;",confirmation);
+  const deletion=source.indexOf("await storageClient.deleteLesson(id);",cancellation);
+  assert.ok(confirmation >= 0 && cancellation > confirmation && deletion > cancellation);
+  assert.ok(source.includes("tiến độ liên quan sẽ không còn hiển thị"));
+});
+test("legacy migration UI keeps diagnostic codes out of user-facing text",()=>{
+  const source=readFileSync(join(process.cwd(),"src/components/LegacyMigrationPanel.tsx"),"utf8");
+  assert.equal(source.includes("{diagnostic.code}: {diagnostic.message}"),false);
+  assert.ok(source.includes("{diagnostic.message}"));
+});
