@@ -13,8 +13,8 @@ import soundfile as sf
 from kokoro_onnx import Kokoro
 
 
-DEFAULT_MODEL_PATH = Path("L:/tts_tool/models/kokoro-v1.0.onnx")
-DEFAULT_VOICES_PATH = Path("L:/tts_tool/models/voices-v1.0.bin")
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "kokoro-v1.0.onnx"
+DEFAULT_VOICES_PATH = Path(__file__).resolve().parent / "models" / "voices-v1.0.bin"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5050
 DEFAULT_VOICE = "af_sarah"

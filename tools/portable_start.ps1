@@ -27,6 +27,12 @@ function Test-Url([string] $Url) {
     catch { return $false }
 }
 
+foreach ($requiredFile in @($Node, $Python, $KokoroServer, $Model, $Voices)) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        throw "Portable required file was not found: $requiredFile"
+    }
+}
+
 if (-not (Test-Url $HealthUrl)) {
     Start-Process -FilePath $Python `
         -ArgumentList @("`"$KokoroServer`"", "--model", "`"$Model`"", "--voices", "`"$Voices`"") `

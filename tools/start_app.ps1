@@ -1,8 +1,11 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$KokoroPython = "L:\tts_tool\.venv\Scripts\python.exe"
+$KokoroPython = $env:KOKORO_PYTHON_PATH
+$KokoroToolDir = $env:KOKORO_TOOL_DIR
 $KokoroServer = Join-Path $ProjectRoot "tools\kokoro_server.py"
+$KokoroModel = $env:KOKORO_MODEL_PATH
+$KokoroVoices = $env:KOKORO_VOICES_PATH
 $NodeAppUrl = "http://localhost:3000"
 $KokoroHealthUrl = "http://127.0.0.1:5050/health"
 
@@ -26,6 +29,19 @@ function Start-KokoroServer {
         return
     }
 
+    if ([string]::IsNullOrWhiteSpace($KokoroPython) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
+        $script:KokoroPython = Join-Path $KokoroToolDir ".venv\Scripts\python.exe"
+    }
+    if ([string]::IsNullOrWhiteSpace($KokoroModel) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
+        $script:KokoroModel = Join-Path $KokoroToolDir "models\kokoro-v1.0.onnx"
+    }
+    if ([string]::IsNullOrWhiteSpace($KokoroVoices) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
+        $script:KokoroVoices = Join-Path $KokoroToolDir "models\voices-v1.0.bin"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($KokoroPython)) {
+        throw "Kokoro Python is not configured. Set KOKORO_PYTHON_PATH or KOKORO_TOOL_DIR."
+    }
     if (-not (Test-Path -LiteralPath $KokoroPython)) {
         throw "Khong tim thay Python Kokoro: $KokoroPython"
     }
@@ -33,10 +49,16 @@ function Start-KokoroServer {
     if (-not (Test-Path -LiteralPath $KokoroServer)) {
         throw "Khong tim thay Kokoro server: $KokoroServer"
     }
+    if ([string]::IsNullOrWhiteSpace($KokoroModel) -or -not (Test-Path -LiteralPath $KokoroModel)) {
+        throw "Kokoro model was not found: $KokoroModel"
+    }
+    if ([string]::IsNullOrWhiteSpace($KokoroVoices) -or -not (Test-Path -LiteralPath $KokoroVoices)) {
+        throw "Kokoro voices file was not found: $KokoroVoices"
+    }
 
     Start-Process `
         -FilePath $KokoroPython `
-        -ArgumentList @("`"$KokoroServer`"") `
+        -ArgumentList @("`"$KokoroServer`"", "--model", "`"$KokoroModel`"", "--voices", "`"$KokoroVoices`"") `
         -WorkingDirectory $ProjectRoot `
         -WindowStyle Hidden
 }

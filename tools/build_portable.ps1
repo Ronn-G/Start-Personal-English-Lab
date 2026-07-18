@@ -1,12 +1,57 @@
-$ErrorActionPreference = "Stop"
+param(
+    [string] $PythonSource = $env:PORTABLE_PYTHON_SOURCE,
+    [string] $TtsSource = $env:KOKORO_TOOL_DIR,
+    [string] $OutputRoot
+)
 
+$ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$OutputRoot = Join-Path (Split-Path -Parent $ProjectRoot) "Personal-English-Lab-Portable"
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    $OutputRoot = Join-Path (Split-Path -Parent $ProjectRoot) "Personal-English-Lab-Portable"
+}
+$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $ZipPath = "$OutputRoot.zip"
 $Standalone = Join-Path $ProjectRoot ".next\standalone"
-$PythonSource = "C:\Users\long\.cache\codex-runtimes\codex-primary-runtime\dependencies\python"
-$TtsSource = "L:\tts_tool"
 $NodeSource = (Get-Command node.exe -ErrorAction Stop).Source
+
+if ([string]::IsNullOrWhiteSpace($PythonSource)) {
+    $relativePython = Join-Path $ProjectRoot "runtime\python"
+    if (Test-Path -LiteralPath $relativePython -PathType Container) {
+        $PythonSource = $relativePython
+    }
+}
+if ([string]::IsNullOrWhiteSpace($TtsSource)) {
+    $relativeTts = Join-Path $ProjectRoot "tts"
+    if (Test-Path -LiteralPath $relativeTts -PathType Container) {
+        $TtsSource = $relativeTts
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($PythonSource)) {
+    throw "Portable Python is not configured. Use -PythonSource or PORTABLE_PYTHON_SOURCE."
+}
+if ([string]::IsNullOrWhiteSpace($TtsSource)) {
+    throw "Kokoro source is not configured. Use -TtsSource or KOKORO_TOOL_DIR."
+}
+
+$PythonExecutable = Join-Path $PythonSource "python.exe"
+$KokoroSitePackages = Join-Path $TtsSource ".venv\Lib\site-packages"
+$ModelSource = Join-Path $TtsSource "models\kokoro-v1.0.onnx"
+$VoicesSource = Join-Path $TtsSource "models\voices-v1.0.bin"
+$KokoroServerSource = Join-Path $ProjectRoot "tools\kokoro_server.py"
+
+$requiredDirectories = @($PythonSource, $TtsSource, $KokoroSitePackages)
+foreach ($path in $requiredDirectories) {
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        throw "Required directory was not found: $path"
+    }
+}
+$requiredFiles = @($PythonExecutable, $ModelSource, $VoicesSource, $KokoroServerSource)
+foreach ($path in $requiredFiles) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required file was not found: $path"
+    }
+}
 
 $NodeMajorVersion = [int]((& $NodeSource -p "process.versions.node.split('.')[0]").Trim())
 if ($NodeMajorVersion -lt 24) {
@@ -20,6 +65,9 @@ try {
 }
 finally { Pop-Location }
 
+if (-not (Test-Path -LiteralPath $Standalone -PathType Container)) {
+    throw "Standalone build was not found: $Standalone"
+}
 if (Test-Path -LiteralPath $OutputRoot) {
     Remove-Item -LiteralPath $OutputRoot -Recurse -Force
 }
@@ -36,14 +84,17 @@ Copy-Item -LiteralPath $NodeSource -Destination (Join-Path $OutputRoot "runtime\
 $PortablePython = Join-Path $OutputRoot "tts\python"
 New-Item -ItemType Directory -Path $PortablePython | Out-Null
 & robocopy $PythonSource $PortablePython /E /XD __pycache__ /XF *.pyc | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "Could not copy Python runtime." }
+if ($LASTEXITCODE -ge 8) { throw "Could not copy Python runtime from: $PythonSource" }
 
 $SitePackages = Join-Path $PortablePython "Lib\site-packages"
-& robocopy (Join-Path $TtsSource ".venv\Lib\site-packages") $SitePackages /E /XD __pycache__ /XF *.pyc | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "Could not copy Kokoro dependencies." }
+& robocopy $KokoroSitePackages $SitePackages /E /XD __pycache__ /XF *.pyc | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "Could not copy Kokoro dependencies from: $KokoroSitePackages" }
 
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\kokoro_server.py") -Destination (Join-Path $OutputRoot "tts\kokoro_server.py")
-Copy-Item -LiteralPath (Join-Path $TtsSource "models") -Destination (Join-Path $OutputRoot "tts\models") -Recurse
+$PortableModels = Join-Path $OutputRoot "tts\models"
+New-Item -ItemType Directory -Path $PortableModels | Out-Null
+Copy-Item -LiteralPath $KokoroServerSource -Destination (Join-Path $OutputRoot "tts\kokoro_server.py")
+Copy-Item -LiteralPath $ModelSource -Destination (Join-Path $PortableModels "kokoro-v1.0.onnx")
+Copy-Item -LiteralPath $VoicesSource -Destination (Join-Path $PortableModels "voices-v1.0.bin")
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\portable_start.ps1") -Destination (Join-Path $OutputRoot "portable_start.ps1")
 
 @'
