@@ -44,28 +44,28 @@ function bare(document: BackupDocument): BareBackup { const result:BareBackup={ 
 
 export function validateBackup(value: unknown): { document?: BackupDocument; diagnostics: BackupDiagnostic[] } {
   const d: BackupDiagnostic[] = [];
-  if (!record(value)) return { diagnostics: [{ code: "INVALID_BACKUP", path: "$", message: "Backup pháº£i lÃ  JSON object." }] };
-  if (value.backupFormat !== BACKUP_FORMAT) d.push({ code: "INVALID_FORMAT", path: "$.backupFormat", message: "Sai Ä‘á»‹nh dáº¡ng backup." });
-  if (value.backupVersion !== CURRENT_BACKUP_VERSION) d.push({ code: "UNSUPPORTED_BACKUP_VERSION", path: "$.backupVersion", message: `Chá»‰ há»— trá»£ backup version ${CURRENT_BACKUP_VERSION}.` });
-  for (const key of ["exportedAt","appVersion","databaseSchemaVersion","lessonSchemaVersion","progressSchemaVersion","lessons","progress","settings","integrity"]) if (!(key in value)) d.push({ code: "MISSING_FIELD", path: `$.${key}`, message: `Thiáº¿u field ${key}.` });
-  if (!Array.isArray(value.lessons) || !Array.isArray(value.progress) || value.lessons?.length > 500 || value.progress?.length > 500) d.push({ code: "INVALID_COLLECTION", path: "$", message: "Danh sÃ¡ch lesson/progress khÃ´ng há»£p lá»‡ hoáº·c quÃ¡ 500 record." });
-  if (value.lessonSchemaVersion !== 1 || value.progressSchemaVersion !== 1) d.push({ code: "UNSUPPORTED_DOCUMENT_VERSION", path: "$", message: "Schema lesson/progress khÃ´ng Ä‘Æ°á»£c há»— trá»£." });
+  if (!record(value)) return { diagnostics: [{ code: "INVALID_BACKUP", path: "$", message: "Backup phải là một đối tượng JSON." }] };
+  if (value.backupFormat !== BACKUP_FORMAT) d.push({ code: "INVALID_FORMAT", path: "$.backupFormat", message: "Sai định dạng backup." });
+  if (value.backupVersion !== CURRENT_BACKUP_VERSION) d.push({ code: "UNSUPPORTED_BACKUP_VERSION", path: "$.backupVersion", message: `Chỉ hỗ trợ backup version ${CURRENT_BACKUP_VERSION}.` });
+  for (const key of ["exportedAt","appVersion","databaseSchemaVersion","lessonSchemaVersion","progressSchemaVersion","lessons","progress","settings","integrity"]) if (!(key in value)) d.push({ code: "MISSING_FIELD", path: `$.${key}`, message: `Thiếu trường ${key}.` });
+  if (!Array.isArray(value.lessons) || !Array.isArray(value.progress) || value.lessons?.length > 500 || value.progress?.length > 500) d.push({ code: "INVALID_COLLECTION", path: "$", message: "Danh sách bài học/tiến độ không hợp lệ hoặc có quá 500 bản ghi." });
+  if (value.lessonSchemaVersion !== 1 || value.progressSchemaVersion !== 1) d.push({ code: "UNSUPPORTED_DOCUMENT_VERSION", path: "$", message: "Schema bài học/tiến độ không được hỗ trợ." });
   const ids = new Set<string>(); const itemIds = new Map<string, Set<string>>();
   if (Array.isArray(value.lessons)) value.lessons.forEach((lesson, i) => {
     const result = validateCanonicalLesson(lesson);
     if (!result.success) d.push({ code: "INVALID_LESSON", path: `$.lessons[${i}]`, message: result.diagnostics.map(x=>x.message).join("; ") });
-    else if (ids.has((lesson as Lesson).id)) d.push({ code: "DUPLICATE_LESSON_ID", path: `$.lessons[${i}].id`, message: "Lesson ID bá»‹ trÃ¹ng trong backup." });
+    else if (ids.has((lesson as Lesson).id)) d.push({ code: "DUPLICATE_LESSON_ID", path: `$.lessons[${i}].id`, message: "ID bài học bị trùng trong backup." });
     else { const data=lesson as Lesson; ids.add(data.id); itemIds.set(data.id,new Set([...data.vocabulary,...data.idiomsAndSlang,...data.exampleSentences,...data.quiz,...data.deepPractice.shadowingPractice.lines,...data.deepPractice.sentenceMining,...data.deepPractice.ankiCards].map(x=>x.id))); }
   });
   if (Array.isArray(value.progress)) value.progress.forEach((progress, i) => {
     const result = validateLessonProgress(progress);
     if (!result.success) d.push({ code: "INVALID_PROGRESS", path: `$.progress[${i}]`, message: result.diagnostics.map(x=>x.message).join("; ") });
-    else if (!ids.has((progress as LessonProgress).lessonId)) d.push({ code: "ORPHAN_PROGRESS", path: `$.progress[${i}].lessonId`, message: "Progress khÃ´ng cÃ³ lesson tÆ°Æ¡ng á»©ng." });
-    else { const data=progress as LessonProgress, allowed=itemIds.get(data.lessonId)!; const bad=[...Object.keys(data.quizItems),...Object.keys(data.learningItems)].find(id=>!allowed.has(id)); if(bad)d.push({code:"ITEM_ID_MISMATCH",path:`$.progress[${i}]`,message:`Progress tham chiáº¿u item ID khÃ´ng thuá»™c lesson: ${bad}.`}); }
+    else if (!ids.has((progress as LessonProgress).lessonId)) d.push({ code: "ORPHAN_PROGRESS", path: `$.progress[${i}].lessonId`, message: "Tiến độ không có bài học tương ứng." });
+    else { const data=progress as LessonProgress, allowed=itemIds.get(data.lessonId)!; const bad=[...Object.keys(data.quizItems),...Object.keys(data.learningItems)].find(id=>!allowed.has(id)); if(bad)d.push({code:"ITEM_ID_MISMATCH",path:`$.progress[${i}]`,message:`Tiến độ tham chiếu tới ID nội dung không thuộc bài học: ${bad}.`}); }
   });
   if (d.length) return { diagnostics: d };
   const document = value as unknown as BackupDocument;
-  if (!record(document.integrity) || document.integrity.algorithm !== "SHA-256" || document.integrity.checksum !== checksum(bare(document))) d.push({ code: "CHECKSUM_MISMATCH", path: "$.integrity.checksum", message: "Checksum khÃ´ng khá»›p; file cÃ³ thá»ƒ Ä‘Ã£ há»ng hoáº·c bá»‹ sá»­a." });
+  if (!record(document.integrity) || document.integrity.algorithm !== "SHA-256" || document.integrity.checksum !== checksum(bare(document))) d.push({ code: "CHECKSUM_MISMATCH", path: "$.integrity.checksum", message: "Checksum không khớp; file có thể đã hỏng hoặc bị sửa." });
   return d.length ? { diagnostics: d } : { document, diagnostics: [] };
 }
 
@@ -78,7 +78,7 @@ export function exportBackup(database: DatabaseSync, appVersion: string, now = n
     const speakingSessions=(database.prepare("SELECT s.* FROM speaking_sessions s JOIN lessons l ON l.id=s.lesson_id WHERE l.deleted_at IS NULL ORDER BY s.lesson_id,s.updated_at").all() as Record<string,unknown>[]).map(r=>({id:String(r.id),lessonId:String(r.lesson_id),itemIds:JSON.parse(String(r.item_ids_json)) as string[],drafts:JSON.parse(String(r.drafts_json||"{}")) as Record<string,string>,checks:JSON.parse(String(r.checks_json||"{}")) as Record<string,unknown>,currentItemIndex:Number(r.current_item_index),currentStep:String(r.current_step),status:r.status as SpeakingSessionBackup["status"],createdAt:String(r.created_at),updatedAt:String(r.updated_at),...(r.completed_at?{completedAt:String(r.completed_at)}:{})}));
     const payload: BareBackup = { backupFormat: BACKUP_FORMAT, backupVersion: 1, exportedAt: now, appVersion, databaseSchemaVersion: CURRENT_DATABASE_VERSION, lessonSchemaVersion: CURRENT_LESSON_SCHEMA_VERSION, progressSchemaVersion: 1, lessons, progress, speakingProgress, speakingSessions, settings: {} };
     const document: BackupDocument = { ...payload, integrity: { algorithm: "SHA-256", checksum: checksum(payload) } };
-    const validated = validateBackup(document); if (!validated.document) throw new Error(`Dá»¯ liá»‡u SQLite khÃ´ng há»£p lá»‡: ${validated.diagnostics.map(x=>x.message).join("; ")}`);
+    const validated = validateBackup(document); if (!validated.document) throw new Error(`Dữ liệu SQLite không hợp lệ: ${validated.diagnostics.map(x=>x.message).join("; ")}`);
     database.exec("COMMIT"); return document;
   } catch (e) { database.exec("ROLLBACK"); throw e; }
 }
@@ -90,7 +90,7 @@ export function previewImport(database: DatabaseSync, value: unknown): ImportPre
   const current=existing(database); const fingerprints=new Map([...current.values()].map(l=>[contentFingerprint(l),l.id])); let duplicates=0,conflicts=0,newLessons=0;
   for(const lesson of doc.lessons){ const same=current.get(lesson.id); if(same){ if(contentFingerprint(same)===contentFingerprint(lesson)) duplicates++; else {conflicts++;newLessons++;} } else if(fingerprints.has(contentFingerprint(lesson))) duplicates++; else newLessons++; }
   const fingerprint=doc.integrity.checksum; const prior=Boolean(database.prepare("SELECT 1 FROM import_receipts WHERE source_fingerprint=? AND result='success'").get(fingerprint));
-  const warnings:string[]=[]; if(conflicts) warnings.push(`${conflicts} xung Ä‘á»™t ID sáº½ Ä‘Æ°á»£c giá»¯ cáº£ hai báº±ng ID má»›i khi Merge.`); if(prior) warnings.push("Backup nÃ y Ä‘Ã£ tá»«ng Ä‘Æ°á»£c import; hÃ£y xÃ¡c nháº­n náº¿u muá»‘n tiáº¿p tá»¥c.");
+  const warnings:string[]=[]; if(conflicts) warnings.push(`${conflicts} xung đột ID sẽ được giữ cả hai bằng ID mới khi gộp.`); if(prior) warnings.push("Backup này đã từng được nhập; hãy xác nhận nếu muốn tiếp tục.");
   return {valid:true,exportedAt:doc.exportedAt,appVersion:doc.appVersion,databaseSchemaVersion:doc.databaseSchemaVersion,lessonCount:doc.lessons.length,progressCount:doc.progress.length,validRecords:doc.lessons.length+doc.progress.length,invalidRecords:0,duplicates,conflicts,newLessons,updatedLessons:duplicates,previouslyImported:prior,warnings,diagnostics:[],fingerprint};
 }
 
@@ -104,7 +104,7 @@ export function mergeSpeakingProgress(a:SpeakingProgressBackup|undefined,b:Speak
 function dbSpeaking(row:Record<string,unknown>):SpeakingProgressBackup{return {lessonId:String(row.lesson_id),practiceItemId:String(row.practice_item_id),sourceType:String(row.source_type),sourceItemId:String(row.source_item_id),status:row.status as SpeakingProgressBackup["status"],attemptCount:Number(row.attempt_count),helpCount:Number(row.help_count),showAnswerCount:Number(row.show_answer_count),recalledCount:Number(row.recalled_count),personalizedCount:Number(row.personalized_count),...(row.self_rating?{selfRating:row.self_rating as SpeakingProgressBackup["selfRating"]}:{}),...(row.first_practiced_at?{firstPracticedAt:String(row.first_practiced_at)}:{}),...(row.last_practiced_at?{lastPracticedAt:String(row.last_practiced_at)}:{}),updatedAt:String(row.updated_at)};}
 
 export function importBackup(database: DatabaseSync, value: unknown, mode: "merge"|"replace", allowRepeat=false): ImportPreview {
-  const preview=previewImport(database,value); if(!preview.valid) throw new Error(preview.diagnostics.map(x=>x.message).join("; ")); if(preview.previouslyImported&&!allowRepeat) throw new Error("Backup nÃ y Ä‘Ã£ Ä‘Æ°á»£c import. Cáº§n xÃ¡c nháº­n import láº¡i.");
+  const preview=previewImport(database,value); if(!preview.valid) throw new Error(preview.diagnostics.map(x=>x.message).join("; ")); if(preview.previouslyImported&&!allowRepeat) throw new Error("Backup này đã được nhập. Cần xác nhận trước khi nhập lại.");
   const doc=validateBackup(value).document!; database.exec("BEGIN IMMEDIATE");
   try {
     if(mode==="replace"){database.exec("DELETE FROM lesson_progress; DELETE FROM legacy_migration_items; DELETE FROM lessons;");}
