@@ -159,8 +159,20 @@ Do not store backups inside `.next`, the portable app directory or the source re
 
 - `node:sqlite` is compiled into the Node executable, so there is no separate addon binding to trace/copy.
 - The build script resolves the installed `node.exe`, requires major version 24+, and bundles that exact executable.
+- The Windows PowerShell build accepts `-PythonSource` and `-TtsSource`; environment fallbacks are `PORTABLE_PYTHON_SOURCE` and `KOKORO_TOOL_DIR`, followed by repository-relative runtime directories.
+- Before building, it validates `python.exe`, Kokoro site-packages, server script, model and voice files, and reports the exact missing path with a non-zero exit.
 - `.env.local`, API keys and development databases are no longer copied by the portable build script.
 - The portable launcher stores data under Local AppData rather than the artifact.
 - Next standalone build includes the API route code and treats `node:sqlite` as a built-in module.
+
+Example:
+
+```powershell
+.\tools\build_portable.ps1 `
+  -PythonSource "D:\PortableRuntime\Python" `
+  -TtsSource "D:\Kokoro"
+```
+
+The artifact allow-list is the standalone app/static/public assets, Node, Python, Kokoro dependencies/server/model/voices, and launchers. Environment files, `.data`, SQLite files, audio cache, logs, personal backups and API keys must remain outside the artifact. Kokoro health is `http://127.0.0.1:5050/health`.
 
 Remaining risk: Node's v24 documentation currently labels `node:sqlite` release-candidate stability. Portable correctness still requires a clean extracted-artifact smoke test on Windows 10/11, including first-run DB creation, health response, CRUD, restart persistence, no database/API key in ZIP, and behavior under a non-ASCII Windows username.

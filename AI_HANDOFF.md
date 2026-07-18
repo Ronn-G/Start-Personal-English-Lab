@@ -123,8 +123,8 @@ Các con số RAM/CPU là ngưỡng vận hành đề xuất, chưa được xá
 - Windows và PowerShell (các script build hiện chứa đường dẫn Windows tuyệt đối).
 - Node.js tương thích Next.js 16 và npm.
 - Khoảng 4 GB dung lượng trống cho dependencies, build và artifact.
-- Để chạy TTS theo script hiện tại: môi trường Python/model tại `L:\tts_tool`.
-- Để build portable theo script hiện tại: Node ở `C:\Program Files\nodejs\node.exe`, Python runtime bundled tại đường dẫn Codex cache ghi trong script, và TTS source tại `L:\tts_tool`.
+- Để chạy TTS, cấu hình `KOKORO_TOOL_DIR`; hoặc cấu hình `KOKORO_PYTHON_PATH`, `KOKORO_MODEL_PATH` và `KOKORO_VOICES_PATH`.
+- Để build portable, dùng `-PythonSource`/`-TtsSource` hoặc `PORTABLE_PYTHON_SOURCE`/`KOKORO_TOOL_DIR`. Script tự tìm Node trong `PATH` và không phụ thuộc đường dẫn máy tác giả.
 
 Các đường dẫn tuyệt đối khiến build chưa tái lập được trên máy khác. Nên chuyển chúng thành tham số script hoặc biến môi trường trước khi mở rộng đội phát triển.
 
@@ -195,7 +195,7 @@ Copy-Item .env.example .env.local
 npm.cmd run dev
 ```
 
-Mở `http://localhost:3000`. TTS có thể chạy riêng bằng `npm.cmd run tts:kokoro` khi môi trường `L:\tts_tool` tồn tại.
+Mở `http://localhost:3000`. TTS có thể chạy riêng bằng `npm.cmd run tts:kokoro` sau khi cấu hình các biến Kokoro mô tả trong `.env.example`.
 
 Trước khi chấp nhận thay đổi:
 
@@ -236,16 +236,20 @@ Dùng Semantic Versioning:
 5. Chạy:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_portable.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_portable.ps1 `
+  -PythonSource "D:\PortableRuntime\Python" `
+  -TtsSource "D:\Kokoro"
 ```
 
-Script sẽ:
+Có thể dùng `PORTABLE_PYTHON_SOURCE` và `KOKORO_TOOL_DIR` thay cho tham số. Script Windows PowerShell sẽ:
 
 - chạy `npm.cmd run build`;
 - lấy `.next/standalone`, `.next/static` và `public`;
 - bundle `node.exe`, Python, Kokoro dependencies và model;
 - tạo launcher `.bat`/`.vbs`;
 - tạo `Personal-English-Lab-Portable/` và ZIP ở thư mục cha.
+
+Artifact không được chứa `.env`, `.env.local`, `.data`, SQLite, audio cache, logs, backup cá nhân hoặc API key.
 
 6. Giải nén ZIP vào một thư mục sạch trên máy test không có Node/Python.
 7. Chạy `Start Personal English Lab.bat` để xem lỗi; sau đó test `Start Personal English Lab.vbs`.
@@ -288,4 +292,3 @@ Get-FileHash ..\Personal-English-Lab-Portable.zip -Algorithm SHA256
 6. Thêm retry có giới hạn, timeout Gemini và thông báo riêng cho 401/403/429/5xx.
 7. Thiết lập Git history, changelog, tag, CI build và checksum release.
 8. Benchmark phần cứng tối thiểu thực tế và kiểm tra Windows Defender/SmartScreen cho gói portable.
-

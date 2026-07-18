@@ -1,116 +1,84 @@
 # Personal English Lab
 
-Sprint 6 adds a deterministic five-step **Guided Speaking Ladder** with persistent per-item progress and resumable sessions. See [docs/guided-speaking-ladder.md](docs/guided-speaking-ladder.md).
+Ứng dụng cá nhân để tạo bài học tiếng Anh từ transcript YouTube. Dữ liệu bài học, tiến độ và metadata audio cache được lưu trong SQLite; Kokoro ONNX chạy local và Web Speech API là phương án dự phòng.
 
-Sprint 4 adds local JSON backup and restore. Use **Sao lưu và khôi phục** to download a versioned backup, preview an import, then Merge or explicitly confirm Replace all. Backups never include the Gemini API key, machine paths, legacy localStorage, logs, audio, or models. See [docs/backup-and-restore.md](docs/backup-and-restore.md).
+## Chạy ứng dụng
 
-Sprint 5 prepares important lesson audio sequentially in the background and caches validated WAV files under the writable application data directory. The cache is limited to 500 MB, can be cleared without affecting learning data, and is never included in backup. See [docs/audio-cache.md](docs/audio-cache.md).
-
-App ca nhan de tao bai hoc tieng Anh tu transcript YouTube ban tu copy.
-
-## Cach dung voi ChatGPT Plus
-
-1. Dan transcript vao app.
-2. Bam **Copy prompt cho ChatGPT**.
-3. Dan prompt sang ChatGPT Plus.
-4. Copy JSON ChatGPT tra ve.
-5. Dan JSON vao app va bam **Hien thi bai hoc**.
-
-## Chay app
-
-Nhan dup file nay de chay ca app va Kokoro TTS:
-
-```text
-Start Personal English Lab.vbs
-```
-
-Neu muon xem log khi chay, dung file:
-
-```text
-Start Personal English Lab.bat
-```
-
-Hoac chay thu cong:
+Yêu cầu Node.js 24 trở lên vì tầng SQLite dùng `node:sqlite`.
 
 ```powershell
 npm.cmd install
 npm.cmd run dev
 ```
 
-Node.js 24 tro len la bat buoc vi tang luu tru SQLite dung `node:sqlite`.
+Mở `http://localhost:3000`.
 
-Mo:
-
-```text
-http://localhost:3000
-```
-
-## Giong doc Kokoro local
-
-App uu tien dung Kokoro ONNX local o:
-
-```text
-http://127.0.0.1:5050/tts
-```
-
-Chay Kokoro server:
-
-```powershell
-npm.cmd run tts:kokoro
-```
-
-Server nay dung model va voice file co san tren may:
-
-```text
-L:\tts_tool\models\kokoro-v1.0.onnx
-L:\tts_tool\models\voices-v1.0.bin
-```
-
-Voice mac dinh:
-
-```text
-af_sarah
-```
-
-Neu Kokoro server chua chay, nut nghe trong app se tu dong fallback ve Web Speech API cua trinh duyet.
-
-## Tuy chon Gemini API Free
-
-Tao API key mien phi tren Google AI Studio, sau do tao file `.env.local`:
+Để dùng Gemini, tạo `.env.local` (file này không được đóng gói vào portable):
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-3.5-flash
 ```
 
-Sau do co the dung nut **Tao bang Gemini** trong app.
+## Kokoro TTS local
 
-## Kiem tra
+Cấu hình thư mục Kokoro, trong đó có `.venv\Scripts\python.exe`, model và voices:
 
 ```powershell
-npm.cmd test
+$env:KOKORO_TOOL_DIR = "D:\Kokoro"
+npm.cmd run tts:kokoro
+```
+
+Hoặc chỉ định riêng từng file:
+
+```powershell
+$env:KOKORO_PYTHON_PATH = "D:\PythonEnvs\kokoro\Scripts\python.exe"
+$env:KOKORO_MODEL_PATH = "D:\Kokoro\models\kokoro-v1.0.onnx"
+$env:KOKORO_VOICES_PATH = "D:\Kokoro\models\voices-v1.0.bin"
+npm.cmd run tts:kokoro
+```
+
+Kiểm tra health tại `http://127.0.0.1:5050/health`. Nếu Kokoro không chạy, nút nghe trong ứng dụng tự động dùng Web Speech API.
+
+## Kiểm tra
+
+```powershell
 npm.cmd run lint
 npm.cmd run build
+npm.cmd test
 npm.cmd run smoke:storage
 npm.cmd run smoke:backup
 npm.cmd run smoke:audio
+npm.cmd run smoke:speaking
 ```
 
-## SQLite storage (Sprint 1)
+Các npm smoke scripts chạy được trên Windows, Linux và macOS. Các script `.ps1` dùng để build/khởi động portable chỉ dành cho Windows PowerShell.
 
-Tang SQLite server-side da co API va migration, nhung giao dien hien tai van dung
-SQLite schema v5 là nguồn dữ liệu chính cho thư viện bài học, quiz progress và metadata audio cache. Dữ liệu localStorage cũ chỉ được chuyển sau dry-run và xác nhận; các key cũ không bị xóa hoặc ghi đè. Xem `docs/localstorage-migration.md`.
+## Build portable trên Windows
 
-Development mac dinh tao database trong `.data`. Co the chon thu muc ghi duoc:
+Truyền đường dẫn trực tiếp:
 
-```env
-PERSONAL_ENGLISH_LAB_DATA_DIR=C:\path\to\writable\data
+```powershell
+.\tools\build_portable.ps1 `
+  -PythonSource "D:\PortableRuntime\Python" `
+  -TtsSource "D:\Kokoro"
 ```
 
-Khi server dang chay, kiem tra storage:
+Hoặc dùng biến môi trường:
 
-```text
-GET http://localhost:3000/api/storage/health
+```powershell
+$env:PORTABLE_PYTHON_SOURCE = "D:\PortableRuntime\Python"
+$env:KOKORO_TOOL_DIR = "D:\Kokoro"
+.\tools\build_portable.ps1
 ```
 
-Xem `docs/storage-architecture.md` de biet schema, backup va ke hoach migration Sprint 3.
+`PythonSource` phải chứa `python.exe`. `TtsSource` phải chứa `.venv\Lib\site-packages`, `models\kokoro-v1.0.onnx` và `models\voices-v1.0.bin`. Tham số dòng lệnh được ưu tiên, sau đó là biến môi trường, rồi các thư mục tương đối `runtime\python` và `tts` trong repository. Thiếu dependency sẽ làm script dừng trước khi build/copy.
+
+Portable gồm standalone app, static/public assets, `node.exe`, Python runtime, Kokoro dependencies, server script, model, voice và launcher. Portable tuyệt đối không gồm `.env`, `.env.local`, `.data`, SQLite cá nhân, audio cache, logs hoặc backup cá nhân. Launcher lưu dữ liệu mới trong `%LOCALAPPDATA%\PersonalEnglishLab`.
+
+## Tài liệu
+
+- [Kiến trúc lưu trữ](docs/storage-architecture.md)
+- [Backup và khôi phục](docs/backup-and-restore.md)
+- [Audio cache](docs/audio-cache.md)
+- [Guided Speaking Ladder](docs/guided-speaking-ladder.md)
