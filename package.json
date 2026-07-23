@@ -11,6 +11,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .github package.json .prettierrc.json README.md AI_HANDOFF.md docs src/server/backup/backup.ts src/lib/speaking-practice.ts src/app/api/speaking/route.ts",
     "test": "tsc -p tsconfig.test.json && node --test \".test-dist/test/**/*.test.js\"",
     "smoke:storage": "node tools/smoke_storage.mjs",
     "smoke:backup": "tsc -p tsconfig.test.json && node --test --test-name-pattern=backup \".test-dist/test/**/*.test.js\"",
@@ -31,6 +33,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
     "png-to-ico": "^3.0.1",
+    "prettier": "^3.9.6",
     "sharp": "^0.35.2",
     "tailwindcss": "^4",
     "typescript": "^5"
