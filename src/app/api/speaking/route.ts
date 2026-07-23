@@ -6,24 +6,262 @@ import { readJsonBody, isRecord, storageErrorResponse } from "@/server/storage/a
 import { StorageError } from "@/server/storage/errors";
 import type { Lesson } from "@/types/lesson";
 
-const ratings=new Set(["hard","okay","easy"]);
-interface DbSession { id:string; lesson_id:string; item_ids_json:string; drafts_json:string; checks_json:string; current_item_index:number; current_step:string; status:string; created_at:string; updated_at:string; completed_at:string|null }
-function lessonRow(id:string){const row=getStorageContext().database.prepare("SELECT lesson_json FROM lessons WHERE id=? AND deleted_at IS NULL").get(id) as {lesson_json:string}|undefined;if(!row)throw new StorageError("NOT_FOUND","Không tìm thấy bài học.");return JSON.parse(row.lesson_json) as Lesson;}
-function response(lesson:Lesson,row:{id:string;item_ids_json:string;drafts_json:string;checks_json:string;current_item_index:number;current_step:string;status:string;created_at:string;updated_at:string;completed_at:string|null}){const tasks=buildSpeakingSession(lesson),ids=JSON.parse(row.item_ids_json) as string[],db=getStorageContext().database,progress=(db.prepare(`SELECT * FROM speaking_progress WHERE lesson_id=? AND practice_item_id IN (${ids.map(()=>"?").join(",")||"''"})`).all(lesson.id,...ids) as Record<string,unknown>[]);const counts={practiced:progress.length,recalledWithoutHelp:progress.filter(x=>Number(x.show_answer_count)===0&&["recalled","personalized"].includes(String(x.status))).length,neededAnswer:progress.filter(x=>Number(x.show_answer_count)>0).length,personalized:progress.filter(x=>Number(x.personalized_count)>0).length,freeSpeak:row.status==="completed"?1:0,hard:progress.filter(x=>x.self_rating==="hard").length,okay:progress.filter(x=>x.self_rating==="okay").length,easy:progress.filter(x=>x.self_rating==="easy").length};const reviewIds=progress.filter(x=>x.self_rating==="hard"||Number(x.show_answer_count)>0||x.status==="recalled_with_help").map(x=>String(x.practice_item_id));return {session:{id:row.id,lessonId:lesson.id,itemIds:ids,currentItemIndex:row.current_item_index,currentStep:row.current_step,status:row.status,createdAt:row.created_at,updatedAt:row.updated_at,completedAt:row.completed_at,drafts:JSON.parse(row.drafts_json||"{}"),checks:JSON.parse(row.checks_json||"{}")},lessonTitle:lesson.title,tasks:ids.map(id=>tasks.find(x=>x.id===id)).filter(Boolean),summary:{...counts,reviewIds}};}
-export async function POST(request:Request){try{const body=await readJsonBody(request);if(!isRecord(body)||typeof body.action!=="string")throw new StorageError("VALIDATION_ERROR","Lệnh speaking không hợp lệ.");const db=getStorageContext().database;if(body.action==="daily"){const active=db.prepare("SELECT lesson_id FROM speaking_sessions WHERE status='active' ORDER BY updated_at DESC LIMIT 1").get() as {lesson_id:string}|undefined;if(active)return NextResponse.json({lessonId:active.lesson_id,reason:"active"});const rows=db.prepare("SELECT lesson_json FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as {lesson_json:string}[];const eligible=rows.map(x=>JSON.parse(x.lesson_json) as Lesson).filter(x=>buildSpeakingSession(x).length);if(!eligible.length)return NextResponse.json({lessonId:null});const hard=db.prepare("SELECT lesson_id FROM speaking_progress WHERE self_rating='hard' OR status='recalled_with_help' ORDER BY last_practiced_at ASC LIMIT 1").get() as {lesson_id:string}|undefined;return NextResponse.json({lessonId:hard?.lesson_id??eligible[0].id,reason:hard?"difficult":"recent"});}if(typeof body.lessonId!=="string")throw new StorageError("VALIDATION_ERROR","Thiếu lesson ID.");const lesson=lessonRow(body.lessonId),tasks=buildSpeakingSession(lesson),now=new Date().toISOString();
-  if(body.action==="start"){if(!tasks.length)return NextResponse.json({empty:true,lessonTitle:lesson.title,tasks:[]});let row=db.prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active'").get(lesson.id) as unknown as DbSession|undefined;if(!row){const id=randomUUID();db.prepare("INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)").run(id,lesson.id,JSON.stringify(tasks.map(x=>x.id)),now,now);row=db.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(id) as unknown as DbSession;}return NextResponse.json(response(lesson,row));}
-  if(body.action==="status"){const row=db.prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1").get(lesson.id) as unknown as DbSession|undefined;return NextResponse.json(row?response(lesson,row):{session:null,lessonTitle:lesson.title,tasks,empty:!tasks.length});}
-  if(body.action==="start_new"||body.action==="review"){let chosen=tasks;if(body.action==="review"){const difficult=new Set((db.prepare("SELECT practice_item_id FROM speaking_progress WHERE lesson_id=? AND (self_rating='hard' OR show_answer_count>0 OR status='recalled_with_help')").all(lesson.id) as {practice_item_id:string}[]).map(x=>x.practice_item_id));chosen=tasks.filter(x=>difficult.has(x.id));}if(!chosen.length)chosen=tasks;if(!chosen.length)return NextResponse.json({empty:true,lessonTitle:lesson.title,tasks:[]});db.prepare("UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE lesson_id=? AND status='active'").run(now,lesson.id);const id=randomUUID();db.prepare("INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)").run(id,lesson.id,JSON.stringify(chosen.map(x=>x.id)),now,now);return NextResponse.json(response(lesson,db.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(id) as unknown as DbSession));}
-  if(typeof body.sessionId!=="string")throw new StorageError("VALIDATION_ERROR","Thiếu session ID.");const row=db.prepare("SELECT * FROM speaking_sessions WHERE id=? AND lesson_id=?").get(body.sessionId,lesson.id) as unknown as DbSession|undefined;if(!row)throw new StorageError("NOT_FOUND","Không tìm thấy phiên luyện nói.");const ids=JSON.parse(row.item_ids_json) as string[],itemId=ids[row.current_item_index];if(body.action==="save_draft"){if(typeof body.draft!=="string"||body.draft.length>500)throw new StorageError("VALIDATION_ERROR","Draft must be at most 500 characters.");const drafts=JSON.parse(row.drafts_json||"{}") as Record<string,string>;const draft=body.draft.trim();if(draft)drafts[itemId]=draft;else delete drafts[itemId];db.prepare("UPDATE speaking_sessions SET drafts_json=?,updated_at=? WHERE id=? AND status='active'").run(JSON.stringify(drafts),now,row.id);}
-  else if(body.action==="advance"){if(typeof body.step!=="string"||!LADDER_STEPS.some(step=>step===body.step))throw new StorageError("VALIDATION_ERROR","Bậc luyện nói không hợp lệ.");db.prepare("UPDATE speaking_sessions SET current_step=?,updated_at=? WHERE id=? AND status='active'").run(body.step,now,row.id);}
-  else if(body.action==="show_answer"){const currentTask=tasks.find(x=>x.id===itemId);if(!currentTask)throw new StorageError("VALIDATION_ERROR","Item không thuộc lesson.");db.prepare("INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,'practicing',0,1,1,0,0,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET help_count=MAX(help_count,1),show_answer_count=MAX(show_answer_count,1),last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at").run(lesson.id,itemId,currentTask.sourceType,currentTask.sourceItemId,now,now,now);}
-  else if(body.action==="complete_item"){if(typeof body.rating!=="string"||!ratings.has(body.rating))throw new StorageError("VALIDATION_ERROR","Đánh giá không hợp lệ.");const helped=Boolean(body.helped),rank=helped?2:4,currentTask=tasks.find(x=>x.id===itemId);if(!currentTask)throw new StorageError("VALIDATION_ERROR","Item không thuộc lesson.");db.exec("BEGIN IMMEDIATE");try{db.prepare(`INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,self_rating,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,?,1,?,?,1,1,?,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET status=CASE WHEN ${rank}>CASE status WHEN 'new' THEN 0 WHEN 'practicing' THEN 1 WHEN 'recalled_with_help' THEN 2 WHEN 'recalled' THEN 3 ELSE 4 END THEN excluded.status ELSE status END,attempt_count=attempt_count+1,help_count=help_count+excluded.help_count,show_answer_count=show_answer_count+excluded.show_answer_count,recalled_count=recalled_count+1,personalized_count=personalized_count+1,self_rating=excluded.self_rating,last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at`).run(lesson.id,itemId,currentTask.sourceType,currentTask.sourceItemId,helped?"recalled_with_help":"personalized",helped?1:0,0,body.rating,now,now,now);const next=row.current_item_index+1;if(next>=ids.length)db.prepare("UPDATE speaking_sessions SET status='completed',completed_at=?,updated_at=? WHERE id=?").run(now,now,row.id);else db.prepare("UPDATE speaking_sessions SET current_item_index=?,current_step='read',updated_at=? WHERE id=?").run(next,now,row.id);db.exec("COMMIT");}catch(e){db.exec("ROLLBACK");throw e;}}
-  else throw new StorageError("VALIDATION_ERROR","Lệnh speaking không được hỗ trợ.");const updated=db.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(row.id) as unknown as DbSession;return NextResponse.json(response(lesson,updated));
-}catch(e){return storageErrorResponse(e);}}
-
-
-
-
-
-
-
+const ratings = new Set(["hard", "okay", "easy"]);
+interface DbSession {
+  id: string;
+  lesson_id: string;
+  item_ids_json: string;
+  drafts_json: string;
+  checks_json: string;
+  current_item_index: number;
+  current_step: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+function lessonRow(id: string) {
+  const row = getStorageContext()
+    .database.prepare("SELECT lesson_json FROM lessons WHERE id=? AND deleted_at IS NULL")
+    .get(id) as { lesson_json: string } | undefined;
+  if (!row) throw new StorageError("NOT_FOUND", "Không tìm thấy bài học.");
+  return JSON.parse(row.lesson_json) as Lesson;
+}
+function response(
+  lesson: Lesson,
+  row: {
+    id: string;
+    item_ids_json: string;
+    drafts_json: string;
+    checks_json: string;
+    current_item_index: number;
+    current_step: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    completed_at: string | null;
+  },
+) {
+  const tasks = buildSpeakingSession(lesson),
+    ids = JSON.parse(row.item_ids_json) as string[],
+    db = getStorageContext().database,
+    progress = db
+      .prepare(
+        `SELECT * FROM speaking_progress WHERE lesson_id=? AND practice_item_id IN (${ids.map(() => "?").join(",") || "''"})`,
+      )
+      .all(lesson.id, ...ids) as Record<string, unknown>[];
+  const counts = {
+    practiced: progress.length,
+    recalledWithoutHelp: progress.filter(
+      (x) =>
+        Number(x.show_answer_count) === 0 &&
+        ["recalled", "personalized"].includes(String(x.status)),
+    ).length,
+    neededAnswer: progress.filter((x) => Number(x.show_answer_count) > 0).length,
+    personalized: progress.filter((x) => Number(x.personalized_count) > 0).length,
+    freeSpeak: row.status === "completed" ? 1 : 0,
+    hard: progress.filter((x) => x.self_rating === "hard").length,
+    okay: progress.filter((x) => x.self_rating === "okay").length,
+    easy: progress.filter((x) => x.self_rating === "easy").length,
+  };
+  const reviewIds = progress
+    .filter(
+      (x) =>
+        x.self_rating === "hard" ||
+        Number(x.show_answer_count) > 0 ||
+        x.status === "recalled_with_help",
+    )
+    .map((x) => String(x.practice_item_id));
+  return {
+    session: {
+      id: row.id,
+      lessonId: lesson.id,
+      itemIds: ids,
+      currentItemIndex: row.current_item_index,
+      currentStep: row.current_step,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      completedAt: row.completed_at,
+      drafts: JSON.parse(row.drafts_json || "{}"),
+      checks: JSON.parse(row.checks_json || "{}"),
+    },
+    lessonTitle: lesson.title,
+    tasks: ids.map((id) => tasks.find((x) => x.id === id)).filter(Boolean),
+    summary: { ...counts, reviewIds },
+  };
+}
+export async function POST(request: Request) {
+  try {
+    const body = await readJsonBody(request);
+    if (!isRecord(body) || typeof body.action !== "string")
+      throw new StorageError("VALIDATION_ERROR", "Lệnh speaking không hợp lệ.");
+    const db = getStorageContext().database;
+    if (body.action === "daily") {
+      const active = db
+        .prepare(
+          "SELECT lesson_id FROM speaking_sessions WHERE status='active' ORDER BY updated_at DESC LIMIT 1",
+        )
+        .get() as { lesson_id: string } | undefined;
+      if (active) return NextResponse.json({ lessonId: active.lesson_id, reason: "active" });
+      const rows = db
+        .prepare(
+          "SELECT lesson_json FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+        )
+        .all() as { lesson_json: string }[];
+      const eligible = rows
+        .map((x) => JSON.parse(x.lesson_json) as Lesson)
+        .filter((x) => buildSpeakingSession(x).length);
+      if (!eligible.length) return NextResponse.json({ lessonId: null });
+      const hard = db
+        .prepare(
+          "SELECT lesson_id FROM speaking_progress WHERE self_rating='hard' OR status='recalled_with_help' ORDER BY last_practiced_at ASC LIMIT 1",
+        )
+        .get() as { lesson_id: string } | undefined;
+      return NextResponse.json({
+        lessonId: hard?.lesson_id ?? eligible[0].id,
+        reason: hard ? "difficult" : "recent",
+      });
+    }
+    if (typeof body.lessonId !== "string")
+      throw new StorageError("VALIDATION_ERROR", "Thiếu lesson ID.");
+    const lesson = lessonRow(body.lessonId),
+      tasks = buildSpeakingSession(lesson),
+      now = new Date().toISOString();
+    if (body.action === "start") {
+      if (!tasks.length)
+        return NextResponse.json({ empty: true, lessonTitle: lesson.title, tasks: [] });
+      let row = db
+        .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active'")
+        .get(lesson.id) as unknown as DbSession | undefined;
+      if (!row) {
+        const id = randomUUID();
+        db.prepare(
+          "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
+        ).run(id, lesson.id, JSON.stringify(tasks.map((x) => x.id)), now, now);
+        row = db
+          .prepare("SELECT * FROM speaking_sessions WHERE id=?")
+          .get(id) as unknown as DbSession;
+      }
+      return NextResponse.json(response(lesson, row));
+    }
+    if (body.action === "status") {
+      const row = db
+        .prepare(
+          "SELECT * FROM speaking_sessions WHERE lesson_id=? ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1",
+        )
+        .get(lesson.id) as unknown as DbSession | undefined;
+      return NextResponse.json(
+        row
+          ? response(lesson, row)
+          : { session: null, lessonTitle: lesson.title, tasks, empty: !tasks.length },
+      );
+    }
+    if (body.action === "start_new" || body.action === "review") {
+      let chosen = tasks;
+      if (body.action === "review") {
+        const difficult = new Set(
+          (
+            db
+              .prepare(
+                "SELECT practice_item_id FROM speaking_progress WHERE lesson_id=? AND (self_rating='hard' OR show_answer_count>0 OR status='recalled_with_help')",
+              )
+              .all(lesson.id) as { practice_item_id: string }[]
+          ).map((x) => x.practice_item_id),
+        );
+        chosen = tasks.filter((x) => difficult.has(x.id));
+      }
+      if (!chosen.length) chosen = tasks;
+      if (!chosen.length)
+        return NextResponse.json({ empty: true, lessonTitle: lesson.title, tasks: [] });
+      db.prepare(
+        "UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE lesson_id=? AND status='active'",
+      ).run(now, lesson.id);
+      const id = randomUUID();
+      db.prepare(
+        "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
+      ).run(id, lesson.id, JSON.stringify(chosen.map((x) => x.id)), now, now);
+      return NextResponse.json(
+        response(
+          lesson,
+          db.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(id) as unknown as DbSession,
+        ),
+      );
+    }
+    if (typeof body.sessionId !== "string")
+      throw new StorageError("VALIDATION_ERROR", "Thiếu session ID.");
+    const row = db
+      .prepare("SELECT * FROM speaking_sessions WHERE id=? AND lesson_id=?")
+      .get(body.sessionId, lesson.id) as unknown as DbSession | undefined;
+    if (!row) throw new StorageError("NOT_FOUND", "Không tìm thấy phiên luyện nói.");
+    const ids = JSON.parse(row.item_ids_json) as string[],
+      itemId = ids[row.current_item_index];
+    if (body.action === "save_draft") {
+      if (typeof body.draft !== "string" || body.draft.length > 500)
+        throw new StorageError("VALIDATION_ERROR", "Draft must be at most 500 characters.");
+      const drafts = JSON.parse(row.drafts_json || "{}") as Record<string, string>;
+      const draft = body.draft.trim();
+      if (draft) drafts[itemId] = draft;
+      else delete drafts[itemId];
+      db.prepare(
+        "UPDATE speaking_sessions SET drafts_json=?,updated_at=? WHERE id=? AND status='active'",
+      ).run(JSON.stringify(drafts), now, row.id);
+    } else if (body.action === "advance") {
+      if (typeof body.step !== "string" || !LADDER_STEPS.some((step) => step === body.step))
+        throw new StorageError("VALIDATION_ERROR", "Bậc luyện nói không hợp lệ.");
+      db.prepare(
+        "UPDATE speaking_sessions SET current_step=?,updated_at=? WHERE id=? AND status='active'",
+      ).run(body.step, now, row.id);
+    } else if (body.action === "show_answer") {
+      const currentTask = tasks.find((x) => x.id === itemId);
+      if (!currentTask) throw new StorageError("VALIDATION_ERROR", "Item không thuộc lesson.");
+      db.prepare(
+        "INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,'practicing',0,1,1,0,0,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET help_count=MAX(help_count,1),show_answer_count=MAX(show_answer_count,1),last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at",
+      ).run(lesson.id, itemId, currentTask.sourceType, currentTask.sourceItemId, now, now, now);
+    } else if (body.action === "complete_item") {
+      if (typeof body.rating !== "string" || !ratings.has(body.rating))
+        throw new StorageError("VALIDATION_ERROR", "Đánh giá không hợp lệ.");
+      const helped = Boolean(body.helped),
+        rank = helped ? 2 : 4,
+        currentTask = tasks.find((x) => x.id === itemId);
+      if (!currentTask) throw new StorageError("VALIDATION_ERROR", "Item không thuộc lesson.");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare(
+          `INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,self_rating,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,?,1,?,?,1,1,?,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET status=CASE WHEN ${rank}>CASE status WHEN 'new' THEN 0 WHEN 'practicing' THEN 1 WHEN 'recalled_with_help' THEN 2 WHEN 'recalled' THEN 3 ELSE 4 END THEN excluded.status ELSE status END,attempt_count=attempt_count+1,help_count=help_count+excluded.help_count,show_answer_count=show_answer_count+excluded.show_answer_count,recalled_count=recalled_count+1,personalized_count=personalized_count+1,self_rating=excluded.self_rating,last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at`,
+        ).run(
+          lesson.id,
+          itemId,
+          currentTask.sourceType,
+          currentTask.sourceItemId,
+          helped ? "recalled_with_help" : "personalized",
+          helped ? 1 : 0,
+          0,
+          body.rating,
+          now,
+          now,
+          now,
+        );
+        const next = row.current_item_index + 1;
+        if (next >= ids.length)
+          db.prepare(
+            "UPDATE speaking_sessions SET status='completed',completed_at=?,updated_at=? WHERE id=?",
+          ).run(now, now, row.id);
+        else
+          db.prepare(
+            "UPDATE speaking_sessions SET current_item_index=?,current_step='read',updated_at=? WHERE id=?",
+          ).run(next, now, row.id);
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    } else throw new StorageError("VALIDATION_ERROR", "Lệnh speaking không được hỗ trợ.");
+    const updated = db
+      .prepare("SELECT * FROM speaking_sessions WHERE id=?")
+      .get(row.id) as unknown as DbSession;
+    return NextResponse.json(response(lesson, updated));
+  } catch (e) {
+    return storageErrorResponse(e);
+  }
+}
