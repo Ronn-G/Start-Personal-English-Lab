@@ -82,7 +82,14 @@ class KokoroHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
 
-        self.send_json({"ok": True, "voice": DEFAULT_VOICE})
+        self.send_json(
+            {
+                "status": "ok",
+                "modelLoaded": kokoro is not None,
+                "host": self.server.server_address[0],
+                "port": self.server.server_address[1],
+            }
+        )
 
     def do_POST(self) -> None:
         if self.path != "/tts":
@@ -138,10 +145,10 @@ def main() -> None:
     model_path = Path(args.model)
     voices_path = Path(args.voices)
 
+    print("Loading Kokoro model and voices...", flush=True)
+    get_kokoro()
     server = ThreadingHTTPServer((args.host, args.port), KokoroHandler)
-    print(f"Kokoro TTS server running at http://{args.host}:{args.port}")
-    print(f"Model: {model_path}")
-    print(f"Voices: {voices_path}")
+    print(f"Kokoro TTS server ready at http://{args.host}:{args.port}", flush=True)
     server.serve_forever()
 
 
