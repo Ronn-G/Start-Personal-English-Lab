@@ -9,8 +9,20 @@ Yêu cầu Node.js 24 trở lên.
 
 ```powershell
 npm install
-npm run dev
+npm run dev:full
 ```
+
+`dev:full` đọc cấu hình Kokoro từ `.env.local`, kiểm tra Python/model/voices, chờ health
+thành công rồi chạy Next.js. Chạy riêng Kokoro bằng `npm run tts:kokoro`.
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:5050/health
+Test-NetConnection 127.0.0.1 -Port 5050
+```
+
+Nút nghe hiển thị `Kokoro local` khi dùng cache/Kokoro và `Browser voice fallback` khi Kokoro
+không phản hồi, trả WAV lỗi hoặc playback thất bại. Mỗi lần bấm đều thử Kokoro lại nên fallback
+không bị khóa vĩnh viễn.
 
 Entry point nằm trong `src/app`; UI ở `src/components`; domain/client helpers ở `src/lib`;
 SQLite, backup và audio cache ở `src/server`; kiểu dữ liệu ở `src/types`. Công cụ và test nằm
@@ -22,6 +34,11 @@ Tạo `.env.local` nếu dùng Gemini:
 GEMINI_API_KEY=your_key
 GEMINI_MODEL=gemini-3.5-flash
 ```
+
+Thêm cấu hình Kokoro vào cùng file bằng path local của máy, dựa trên placeholder trong
+`.env.example`. Nếu launcher dừng sớm, kiểm tra lần lượt Python executable, model, voices, port
+5050 và `.logs/kokoro-dev.stderr.log`. Lỗi import Python/ONNX xuất hiện trong log; health timeout
+không được báo thành công giả.
 
 ## Dữ liệu, backup và audio
 

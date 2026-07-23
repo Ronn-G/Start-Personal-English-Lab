@@ -24,6 +24,11 @@ Không tự thêm Shadow hoặc đổi thứ tự.
 Audio ưu tiên Kokoro local, có disk cache và fallback Web Speech ở client. Smoke tests không cần
 Kokoro model thật.
 
+Development đầy đủ chạy bằng `npm run dev:full`. Launcher đọc `KOKORO_*` từ `.env.local`, validate
+runtime, chờ model-ready health và chỉ cleanup process do chính nó tạo. Chạy riêng TTS bằng
+`npm run tts:kokoro`. Audio UI báo `Kokoro local` hoặc `Browser voice fallback`; mỗi lần bấm thử
+Kokoro lại.
+
 ## Verification bắt buộc
 
 ```powershell

@@ -12,6 +12,27 @@ The default limit is 500 MB. After generation, LRU cleanup removes only enough o
 
 Audio files and `audio_cache` metadata are excluded from backup v1; restore does not delete reusable text-keyed cache. Portable launch already assigns the same writable Local AppData directory to SQLite and audio cache, and build packaging does not copy that directory. Concurrency 2, cache size/voice UI, multi-process locking, low-end hardware throughput and a clean extracted ZIP remain unbenchmarked/unverified. For `KOKORO_UNAVAILABLE` or timeout, verify `http://127.0.0.1:5050/health`, model paths and launcher logs.
 
+## Development startup and fallback
+
+`npm run dev:full` reads only the supported `KOKORO_*` values from the ignored `.env.local`,
+validates Python/model/voices, reuses an already healthy server, or starts one and waits up to 90
+seconds for model readiness before starting Next.js. Logs are written under ignored `.logs/`.
+`npm run tts:kokoro` runs only the TTS server with the same configuration.
+
+The Python server loads model and voices before binding the port. `GET /health` returns
+`status: "ok"` and `modelLoaded: true` only after initialization. The Next.js cache service uses
+`KOKORO_BASE_URL` and validates the returned WAV. A successful click shows `Kokoro local`;
+connection, timeout, invalid WAV, or playback failure uses Web Speech and shows
+`Browser voice fallback`. The next click retries Kokoro.
+
+Troubleshooting:
+
+- Missing Python/model/voices fails before either server starts.
+- A busy port without valid Kokoro health fails instead of starting a duplicate.
+- Python dependency and ONNX load errors are in `.logs/kokoro-dev.stderr.log`.
+- Verify with `Invoke-RestMethod http://127.0.0.1:5050/health` and
+  `Test-NetConnection 127.0.0.1 -Port 5050`.
+
 # Speaking preload
 
 Guided Speaking Ladder preloads only the current and next sentence with background priority. It passes the same normalized text and audio configuration used elsewhere, without step or practice IDs in the cache key. Playback and Web Speech fallback still require an explicit user click; preload failure never blocks practice.
