@@ -174,12 +174,12 @@ Không có `schemaVersion`. `deepPractice` là optional ở type để render đ
 
 ## 4. Dữ liệu localStorage
 
-| Key | Writer/reader | Cấu trúc đang lưu |
-| --- | --- | --- |
-| `personal-english-lab-saved-lessons` | `LessonGenerator.tsx` | JSON array `SavedLesson[]` |
-| `personal-english-lab-progress:<lessonId>` | `LessonDisplay.tsx` | `{ "answeredQuestions": number[] }` |
-| `personal-english-lab-progress:<title>:<summary>` | `LessonDisplay.tsx` fallback khi không có `lessonId` | Cùng cấu trúc progress ở trên |
-| `personal-english-lab-theme` | `ThemeSwitcher.tsx`, bootstrap inline trong `layout.tsx` | Chuỗi `"a"`, `"b"` hoặc `"c"`; giá trị khác fallback về `"a"` |
+| Key                                               | Writer/reader                                            | Cấu trúc đang lưu                                             |
+| ------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- |
+| `personal-english-lab-saved-lessons`              | `LessonGenerator.tsx`                                    | JSON array `SavedLesson[]`                                    |
+| `personal-english-lab-progress:<lessonId>`        | `LessonDisplay.tsx`                                      | `{ "answeredQuestions": number[] }`                           |
+| `personal-english-lab-progress:<title>:<summary>` | `LessonDisplay.tsx` fallback khi không có `lessonId`     | Cùng cấu trúc progress ở trên                                 |
+| `personal-english-lab-theme`                      | `ThemeSwitcher.tsx`, bootstrap inline trong `layout.tsx` | Chuỗi `"a"`, `"b"` hoặc `"c"`; giá trị khác fallback về `"a"` |
 
 `SavedLesson` hiện có dạng:
 

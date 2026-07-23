@@ -72,35 +72,35 @@ SQLite `PRAGMA user_version` is the authoritative migration counter. `app_metada
 
 ### `app_metadata`
 
-| Column | Purpose |
-| --- | --- |
-| `key` | text primary key |
-| `value` | setting/metadata value |
-| `updated_at` | ISO timestamp |
+| Column       | Purpose                |
+| ------------ | ---------------------- |
+| `key`        | text primary key       |
+| `value`      | setting/metadata value |
+| `updated_at` | ISO timestamp          |
 
 ### `lessons`
 
-| Column | Purpose |
-| --- | --- |
-| `id` | stable UUID, primary key; never title/index based |
-| `schema_version` | version of the Lesson JSON payload |
-| `title`, `summary` | searchable/display metadata |
-| `lesson_depth` | nullable future depth classification |
-| `lesson_json` | full transitional Lesson payload, checked with `json_valid` |
-| `created_at`, `updated_at` | ISO timestamps |
-| `source_title`, `source_url`, `source_channel` | nullable source metadata |
-| `original_transcript`, `processed_transcript` | nullable transcript variants |
-| `was_truncated` | SQLite integer boolean constrained to 0/1 |
-| `deleted_at` | nullable soft-delete timestamp |
+| Column                                         | Purpose                                                     |
+| ---------------------------------------------- | ----------------------------------------------------------- |
+| `id`                                           | stable UUID, primary key; never title/index based           |
+| `schema_version`                               | version of the Lesson JSON payload                          |
+| `title`, `summary`                             | searchable/display metadata                                 |
+| `lesson_depth`                                 | nullable future depth classification                        |
+| `lesson_json`                                  | full transitional Lesson payload, checked with `json_valid` |
+| `created_at`, `updated_at`                     | ISO timestamps                                              |
+| `source_title`, `source_url`, `source_channel` | nullable source metadata                                    |
+| `original_transcript`, `processed_transcript`  | nullable transcript variants                                |
+| `was_truncated`                                | SQLite integer boolean constrained to 0/1                   |
+| `deleted_at`                                   | nullable soft-delete timestamp                              |
 
 ### `lesson_progress`
 
-| Column | Purpose |
-| --- | --- |
-| `lesson_id` | primary/foreign key to `lessons.id` |
-| `progress_version` | version of progress JSON |
-| `progress_json` | transitional progress payload, checked with `json_valid` |
-| `created_at`, `updated_at` | ISO timestamps |
+| Column                     | Purpose                                                  |
+| -------------------------- | -------------------------------------------------------- |
+| `lesson_id`                | primary/foreign key to `lessons.id`                      |
+| `progress_version`         | version of progress JSON                                 |
+| `progress_json`            | transitional progress payload, checked with `json_valid` |
+| `created_at`, `updated_at` | ISO timestamps                                           |
 
 Vocabulary, quiz and speaking items are intentionally not normalized in Sprint 1. Their future stable IDs can be introduced with a later payload migration before extracting item tables.
 

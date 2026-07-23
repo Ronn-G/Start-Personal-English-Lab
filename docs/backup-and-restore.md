@@ -16,9 +16,11 @@ Choose a `.json` file of at most 8 MB. The browser parses it without logging or 
 Successful imports store only a compact receipt (UUID, time, source checksum, mode, counts, result and warning count), never the backup blob. Re-importing the same checksum produces a warning and requires explicit confirmation. The checksum detects accidental corruption; it is not a signature, encryption, or protection against a maliciously crafted file.
 
 To restore on a new machine, install/start the app, open **Sao lưu và khôi phục**, select the JSON, inspect the preview, then choose Replace all and confirm. Configure `GEMINI_API_KEY` separately because secrets are deliberately absent. Cloud sync, encryption, automatic backup and Anki export are outside Sprint 4. A clean extracted portable ZIP smoke test remains a release-time manual check.
+
 # Sprint 6 speaking compatibility
 
 Backup v1 now has optional `speakingProgress` and `speakingSessions` collections. Their absence means no speaking history, so pre-Sprint-6 backups remain valid. Counters merge by maximum, status by explicit rank, first practice by earliest timestamp, last/update by latest timestamp, and self-rating from the newest record. Lesson-ID conflicts remap item IDs through stable source type and source item ID. An active session is imported only when every reference remaps; between two active sessions, the farther session wins, then the newer one. Replace includes speaking rows in the existing transaction and never deletes audio cache.
+
 # Personal sentence data
 
 Speaking sessions may contain optional per-item `drafts` and validated `checks`. Their keys are remapped with stable speaking item identities during import; old backups without these fields remain valid. Raw prompts, provider responses, secrets, and audio are never exported.

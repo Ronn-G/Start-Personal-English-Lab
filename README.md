@@ -1,84 +1,65 @@
 # Personal English Lab
 
-Ứng dụng cá nhân để tạo bài học tiếng Anh từ transcript YouTube. Dữ liệu bài học, tiến độ và metadata audio cache được lưu trong SQLite; Kokoro ONNX chạy local và Web Speech API là phương án dự phòng.
+Ứng dụng local-first tạo bài học tiếng Anh từ transcript. App dùng Next.js 16 App Router,
+React 19, TypeScript và SQLite qua `node:sqlite`.
 
-## Chạy ứng dụng
+## Phát triển
 
-Yêu cầu Node.js 24 trở lên vì tầng SQLite dùng `node:sqlite`.
+Yêu cầu Node.js 24 trở lên.
 
 ```powershell
-npm.cmd install
-npm.cmd run dev
+npm install
+npm run dev
 ```
 
-Mở `http://localhost:3000`.
+Entry point nằm trong `src/app`; UI ở `src/components`; domain/client helpers ở `src/lib`;
+SQLite, backup và audio cache ở `src/server`; kiểu dữ liệu ở `src/types`. Công cụ và test nằm
+trong `tools` và `test`.
 
-Để dùng Gemini, tạo `.env.local` (file này không được đóng gói vào portable):
+Tạo `.env.local` nếu dùng Gemini:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=your_key
 GEMINI_MODEL=gemini-3.5-flash
 ```
 
-## Kokoro TTS local
+## Dữ liệu, backup và audio
 
-Cấu hình thư mục Kokoro, trong đó có `.venv\Scripts\python.exe`, model và voices:
+SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
+liệu cũ và theme. Database schema hiện là 7; lesson schema và progress schema là 1. Xóa lesson là
+soft delete.
 
-```powershell
-$env:KOKORO_TOOL_DIR = "D:\Kokoro"
-npm.cmd run tts:kokoro
-```
+Backup version 1 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson/progress và speaking
+progress/session. Backup không gồm audio cache, API key, environment hay metadata nhạy cảm.
 
-Hoặc chỉ định riêng từng file:
+Kokoro chạy local tại `127.0.0.1:5050`; app lưu WAV và metadata trong audio cache. Khi Kokoro
+không khả dụng, client dùng Web Speech API. Health check của Kokoro ở `/health`.
 
-```powershell
-$env:KOKORO_PYTHON_PATH = "D:\PythonEnvs\kokoro\Scripts\python.exe"
-$env:KOKORO_MODEL_PATH = "D:\Kokoro\models\kokoro-v1.0.onnx"
-$env:KOKORO_VOICES_PATH = "D:\Kokoro\models\voices-v1.0.bin"
-npm.cmd run tts:kokoro
-```
+Speaking Ladder hiện tại là Read → Recall → Keywords → Personalize → Free Speak. Việc đổi ladder
+hoặc thêm Shadow không thuộc baseline này.
 
-Kiểm tra health tại `http://127.0.0.1:5050/health`. Nếu Kokoro không chạy, nút nghe trong ứng dụng tự động dùng Web Speech API.
-
-## Kiểm tra
+## Verification
 
 ```powershell
-npm.cmd run lint
-npm.cmd run build
-npm.cmd test
-npm.cmd run smoke:storage
-npm.cmd run smoke:backup
-npm.cmd run smoke:audio
-npm.cmd run smoke:speaking
+npm run format:check
+npm run lint
+npm test
+npm run smoke:storage
+npm run smoke:backup
+npm run smoke:audio
+npm run smoke:speaking
+npm run build
 ```
 
-Các npm smoke scripts chạy được trên Windows, Linux và macOS. Các script `.ps1` dùng để build/khởi động portable chỉ dành cho Windows PowerShell.
-
-## Build portable trên Windows
-
-Truyền đường dẫn trực tiếp:
-
-```powershell
-.\tools\build_portable.ps1 `
-  -PythonSource "D:\PortableRuntime\Python" `
-  -TtsSource "D:\Kokoro"
-```
-
-Hoặc dùng biến môi trường:
-
-```powershell
-$env:PORTABLE_PYTHON_SOURCE = "D:\PortableRuntime\Python"
-$env:KOKORO_TOOL_DIR = "D:\Kokoro"
-.\tools\build_portable.ps1
-```
-
-`PythonSource` phải chứa `python.exe`. `TtsSource` phải chứa `.venv\Lib\site-packages`, `models\kokoro-v1.0.onnx` và `models\voices-v1.0.bin`. Tham số dòng lệnh được ưu tiên, sau đó là biến môi trường, rồi các thư mục tương đối `runtime\python` và `tts` trong repository. Thiếu dependency sẽ làm script dừng trước khi build/copy.
-
-Portable gồm standalone app, static/public assets, `node.exe`, Python runtime, Kokoro dependencies, server script, model, voice và launcher. Portable tuyệt đối không gồm `.env`, `.env.local`, `.data`, SQLite cá nhân, audio cache, logs hoặc backup cá nhân. Launcher lưu dữ liệu mới trong `%LOCALAPPDATA%\PersonalEnglishLab`.
+Portable packaging được hoãn tới final release sprint sau khi app hoàn thiện chức năng.
 
 ## Tài liệu
 
-- [Kiến trúc lưu trữ](docs/storage-architecture.md)
-- [Backup và khôi phục](docs/backup-and-restore.md)
+- [Kiến trúc hiện tại](docs/current-architecture.md)
+- [Storage](docs/storage-architecture.md)
+- [Backup và restore](docs/backup-and-restore.md)
 - [Audio cache](docs/audio-cache.md)
-- [Guided Speaking Ladder](docs/guided-speaking-ladder.md)
+- [Speaking Ladder](docs/guided-speaking-ladder.md)
+- [Development checklist](docs/development-checklist.md)
+- [Versioning và release](docs/versioning-and-release.md)
+- [License review](docs/license-review-needed.md)
