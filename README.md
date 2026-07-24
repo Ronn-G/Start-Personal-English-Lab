@@ -43,7 +43,7 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 7; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 8; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
 Backup version 1 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson/progress và speaking
@@ -54,6 +54,11 @@ không khả dụng, client dùng Web Speech API. Health check của Kokoro ở 
 
 Speaking Ladder hiện tại là Read → Recall → Keywords → Personalize → Free Speak. Việc đổi ladder
 hoặc thêm Shadow không thuộc baseline này.
+
+Immersion Listening Loop chạy trước Speaking Ladder: First Listen → Check Meaning → Second Listen →
+Sentence Review → Final Re-listen. Session, transcript reveal theo phiên và sentence counters được
+lưu trong SQLite; dashboard có Continue Listening và Re-listen. Audio luyện nghe là Kokoro practice
+audio từ transcript/câu đã lưu, không được trình bày như original YouTube audio.
 
 Tiến độ học được lưu trong SQLite theo stable item UUID. Lật thẻ từ vựng đánh dấu item là `learned`;
 mở tab chỉ ghi `visited` và UI hiển thị “Đã xem”, không xem đó là hoàn thành. Quiz, vocabulary,
@@ -71,6 +76,7 @@ npm run smoke:storage
 npm run smoke:backup
 npm run smoke:audio
 npm run smoke:speaking
+npm run smoke:listening
 npm run build
 ```
 
@@ -85,6 +91,7 @@ Portable packaging remains deferred until the final release sprint.
 - [Backup và restore](docs/backup-and-restore.md)
 - [Audio cache](docs/audio-cache.md)
 - [Speaking Ladder](docs/guided-speaking-ladder.md)
+- [Immersion Listening Loop](docs/immersion-listening-loop.md)
 - [Development checklist](docs/development-checklist.md)
 - [Versioning và release](docs/versioning-and-release.md)
 - [License review](docs/license-review-needed.md)

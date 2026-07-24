@@ -9,7 +9,7 @@ import {
 const queue = new AudioQueue(1);
 let current: HTMLAudioElement | undefined;
 
-async function prepare(text: string, priority: number, lessonId: string, speed = 1) {
+async function prepareAudio(text: string, priority: number, lessonId: string, speed = 1) {
   const config = { ...AUDIO_DEFAULTS, speed };
   const key = canonicalAudioInput(text, config);
   return queue.enqueue({
@@ -38,7 +38,7 @@ export const audioClient = {
     let failed = 0;
     const total = items.length;
     for (const item of items) {
-      prepare(item.text, item.priority, item.lessonId, item.config.speed)
+      prepareAudio(item.text, item.priority, item.lessonId, item.config.speed)
         .then(() => {
           ready++;
           onProgress?.(ready, total, failed);
@@ -53,9 +53,12 @@ export const audioClient = {
   cancelLesson(id: string) {
     queue.cancelLesson(id);
   },
+  async prepare(text: string, lessonId = "user", rate = 0.86) {
+    return prepareAudio(text, 0, lessonId, rateToKokoroSpeed(rate));
+  },
   async play(text: string, lessonId = "user", rate = 0.86) {
     const speed = rateToKokoroSpeed(rate);
-    const url = await prepare(text, 0, lessonId, speed);
+    const url = await prepareAudio(text, 0, lessonId, speed);
     current?.pause();
     current = new Audio(url);
     await current.play();

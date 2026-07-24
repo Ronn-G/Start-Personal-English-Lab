@@ -1,5 +1,10 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Immersion Listening Loop: SQLite schema v8 adds independent listening sessions and stable-source
+> item progress. `/api/listening` owns Start/Continue/Practice Again, step validation, transcript
+> reveal, monotonic counters, completion and dashboard review. The client reuses the existing audio
+> cache/Kokoro fallback and can open the existing Speaking Ladder with the same source item.
+
 > Sprint 6: Guided Speaking Ladder derives practice locally from saved lessons. `/api/speaking` owns persisted Start/Continue/Practice Again, daily selection, difficult-item review, ranked progress updates, and resumable sessions. Lesson generation and its prompt are unchanged.
 
 > Sprint 5: SQLite schema v5 tracks filesystem audio cache metadata. Lesson UI uses a shared concurrency-1 client queue; Node audio routes own Kokoro generation, WAV validation, atomic file publication, serving, LRU cleanup and clear operations. Web Speech fallback now exists in runtime and is only invoked after a user click.

@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 7;
+export const CURRENT_DATABASE_VERSION = 8;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -217,6 +217,67 @@ export const MIGRATIONS: readonly Migration[] = [
       database.exec(
         "UPDATE speaking_progress SET source_item_id = practice_item_id WHERE source_item_id IS NULL OR source_item_id = ''",
       );
+    },
+  },
+  {
+    version: 8,
+    name: "immersion_listening_loop",
+    up(database) {
+      database.exec(`
+        CREATE TABLE listening_sessions (
+          id TEXT PRIMARY KEY NOT NULL,
+          lesson_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('active','completed','cancelled')),
+          current_step TEXT NOT NULL CHECK(current_step IN (
+            'first_listen','check_meaning','second_listen','sentence_review','final_relisten','complete'
+          )),
+          first_listen_comprehension TEXT CHECK(first_listen_comprehension IN (
+            'mostly_lost','some_parts','main_idea','most_of_it'
+          )),
+          first_listen_note TEXT NOT NULL DEFAULT '' CHECK(length(first_listen_note) <= 1000),
+          second_listen_comprehension TEXT CHECK(second_listen_comprehension IN (
+            'mostly_lost','some_parts','main_idea','most_of_it'
+          )),
+          final_relisten_rating TEXT CHECK(final_relisten_rating IN (
+            'easier','same','still_difficult'
+          )),
+          final_note TEXT NOT NULL DEFAULT '' CHECK(length(final_note) <= 1000),
+          revealed_item_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(revealed_item_ids_json)),
+          started_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+        ) STRICT;
+
+        CREATE UNIQUE INDEX listening_one_active_session
+          ON listening_sessions(lesson_id) WHERE status='active';
+        CREATE INDEX listening_sessions_recent_idx
+          ON listening_sessions(status, completed_at DESC, updated_at DESC);
+
+        CREATE TABLE listening_item_progress (
+          id TEXT NOT NULL,
+          lesson_id TEXT NOT NULL,
+          source_type TEXT NOT NULL CHECK(source_type IN (
+            'shadowing','example','sentence_mining','vocabulary'
+          )),
+          source_item_id TEXT NOT NULL,
+          listen_count INTEGER NOT NULL DEFAULT 0 CHECK(listen_count >= 0),
+          loop_count INTEGER NOT NULL DEFAULT 0 CHECK(loop_count >= 0),
+          transcript_revealed INTEGER NOT NULL DEFAULT 0 CHECK(transcript_revealed IN (0,1)),
+          recognition_status TEXT NOT NULL DEFAULT 'not_started' CHECK(recognition_status IN (
+            'not_started','heard','recognized'
+          )),
+          difficult INTEGER NOT NULL DEFAULT 0 CHECK(difficult IN (0,1)),
+          last_listened_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(lesson_id,id),
+          UNIQUE(lesson_id,source_type,source_item_id),
+          FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+        ) STRICT;
+
+        CREATE INDEX listening_item_review_idx
+          ON listening_item_progress(difficult DESC, last_listened_at ASC);
+      `);
     },
   },
 ];

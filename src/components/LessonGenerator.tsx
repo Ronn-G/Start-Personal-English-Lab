@@ -23,11 +23,25 @@ function buildChatGptPrompt(transcript: string): string {
   return buildLessonPrompt(transcript);
 }
 
-
 function parsePastedLesson(rawJson: string): Lesson {
   const result = parseLessonText(rawJson);
   if (!result.success || !result.data) throw new Error(formatLessonDiagnostics(result));
   return result.data;
+}
+
+interface ListeningDashboardData {
+  active: {
+    lessonId: string;
+    title: string;
+    currentStep: string;
+    updatedAt: string;
+  } | null;
+  review: Array<{
+    lessonId: string;
+    title: string;
+    lastListenedAt: string;
+    difficultCount: number;
+  }>;
 }
 
 export default function LessonGenerator() {
@@ -43,25 +57,50 @@ export default function LessonGenerator() {
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [openSpeakingOnLoad,setOpenSpeakingOnLoad]=useState(false);
+  const [openSpeakingOnLoad, setOpenSpeakingOnLoad] = useState(false);
+  const [openListeningOnLoad, setOpenListeningOnLoad] = useState(false);
+  const [listeningDashboard, setListeningDashboard] = useState<ListeningDashboardData | null>(null);
   const saveInFlight = useRef(false);
 
   const prompt = useMemo(() => buildChatGptPrompt(transcript.trim()), [transcript]);
   const refreshLibrary = useCallback(async () => {
-    setLibraryLoading(true); setLibraryError(null);
-    try { setSavedLessons(await storageClient.listLessons()); }
-    catch (reason) { setLibraryError(reason instanceof Error ? reason.message : "Không thể tải thư viện SQLite."); }
-    finally { setLibraryLoading(false); }
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      setSavedLessons(await storageClient.listLessons());
+    } catch (reason) {
+      setLibraryError(reason instanceof Error ? reason.message : "Không thể tải thư viện SQLite.");
+    } finally {
+      setLibraryLoading(false);
+    }
   }, []);
 
-  useEffect(() => { void Promise.resolve().then(refreshLibrary); }, [refreshLibrary]);
+  useEffect(() => {
+    void Promise.resolve().then(refreshLibrary);
+  }, [refreshLibrary]);
+  useEffect(() => {
+    fetch("/api/listening", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "dashboard" }),
+    })
+      .then((response) => response.json())
+      .then((body) => setListeningDashboard(body as ListeningDashboardData))
+      .catch(() => undefined);
+  }, [activeSavedId]);
 
   async function showLesson(data: GenerateLessonResponse) {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     setSaving(true);
     try {
-      const saved = await storageClient.createLesson({ id: data.lesson.id, lesson: data.lesson });
+      const saved = await storageClient.createLesson({
+        id: data.lesson.id,
+        lesson: data.lesson,
+        source: transcript.trim() ? { originalTranscript: transcript.trim() } : undefined,
+      });
+      setOpenSpeakingOnLoad(false);
+      setOpenListeningOnLoad(false);
       setResult({ lesson: saved.lesson, videoId: data.videoId });
       setActiveSavedId(saved.id);
       setSaveNotice("Đã lưu bài học vào SQLite.");
@@ -70,20 +109,76 @@ export default function LessonGenerator() {
     } catch (reason) {
       setResult(data);
       setActiveSavedId(undefined);
-      setError(reason instanceof Error ? reason.message : "Không thể lưu bài học; nội dung đang nhập vẫn được giữ.");
-    } finally { saveInFlight.current = false; setSaving(false); }
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Không thể lưu bài học; nội dung đang nhập vẫn được giữ.",
+      );
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
   }
 
-  async function loadSavedLesson(savedLesson: LessonSummary, openSpeaking=false) {
+  async function loadSavedLesson(
+    savedLesson: LessonSummary,
+    openSpeaking = false,
+    openListening = false,
+  ) {
     setError(null);
     try {
       const stored = await storageClient.getLesson(savedLesson.id);
-      setOpenSpeakingOnLoad(openSpeaking);setResult({ lesson: stored.lesson }); setActiveSavedId(stored.id);
+      setOpenSpeakingOnLoad(openSpeaking);
+      setOpenListeningOnLoad(openListening);
+      setResult({ lesson: stored.lesson });
+      setActiveSavedId(stored.id);
       setSaveNotice("Đã mở bài học từ SQLite.");
       window.setTimeout(() => setSaveNotice(null), 1800);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Không thể mở bài học."); }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể mở bài học.");
+    }
   }
-  async function practiceSpeaking(){setError(null);try{const response=await fetch("/api/speaking",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"daily"})});const data=await response.json() as {lessonId:string|null};if(!data.lessonId){setError("Create a lesson with standalone English sentences before practicing speaking.");return;}const selected=savedLessons.find(x=>x.id===data.lessonId);if(selected)await loadSavedLesson(selected,true);}catch(reason){setError(reason instanceof Error?reason.message:"Could not choose a speaking lesson.");}}
+  async function practiceSpeaking() {
+    setError(null);
+    try {
+      const response = await fetch("/api/speaking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "daily" }),
+      });
+      const data = (await response.json()) as { lessonId: string | null };
+      if (!data.lessonId) {
+        setError("Create a lesson with standalone English sentences before practicing speaking.");
+        return;
+      }
+      const selected = savedLessons.find((x) => x.id === data.lessonId);
+      if (selected) await loadSavedLesson(selected, true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not choose a speaking lesson.");
+    }
+  }
+  async function practiceListening(preferredLessonId?: string) {
+    setError(null);
+    try {
+      const response = await fetch("/api/listening", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "dashboard" }),
+      });
+      const dashboard = (await response.json()) as ListeningDashboardData & { error?: string };
+      if (!response.ok) throw new Error(dashboard.error ?? "Could not choose a listening lesson.");
+      setListeningDashboard(dashboard);
+      const lessonId = preferredLessonId ?? dashboard.active?.lessonId ?? savedLessons.at(0)?.id;
+      const selected = savedLessons.find((lesson) => lesson.id === lessonId);
+      if (!selected) {
+        setError("Create a lesson with practice sentences before listening.");
+        return;
+      }
+      await loadSavedLesson(selected, false, true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not choose a listening lesson.");
+    }
+  }
 
   async function deleteSavedLesson(id: string) {
     const confirmed = window.confirm(
@@ -94,9 +189,14 @@ export default function LessonGenerator() {
     setError(null);
     try {
       await storageClient.deleteLesson(id);
-      if (activeSavedId === id) { setActiveSavedId(undefined); setResult(null); }
+      if (activeSavedId === id) {
+        setActiveSavedId(undefined);
+        setResult(null);
+      }
       await refreshLibrary();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Không thể xóa bài học."); }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể xóa bài học.");
+    }
   }
 
   async function copyPrompt() {
@@ -142,11 +242,7 @@ export default function LessonGenerator() {
 
       await showLesson(data);
     } catch (submitError) {
-      setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Không thể tạo bài học.",
-      );
+      setError(submitError instanceof Error ? submitError.message : "Không thể tạo bài học.");
     } finally {
       setLoading(false);
     }
@@ -193,8 +289,8 @@ export default function LessonGenerator() {
               Tạo bài học bằng ChatGPT Plus
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-body">
-              Copy transcript để tạo bài tự động bằng Gemini API Free, hoặc dùng
-              luồng thủ công với ChatGPT/Gemini nếu bạn muốn tự copy JSON.
+              Copy transcript để tạo bài tự động bằng Gemini API Free, hoặc dùng luồng thủ công với
+              ChatGPT/Gemini nếu bạn muốn tự copy JSON.
             </p>
           </div>
           <button
@@ -210,24 +306,94 @@ export default function LessonGenerator() {
 
       <LegacyMigrationPanel onMigrated={refreshLibrary} />
 
-      {libraryLoading ? <p className="rounded-2xl border-2 border-dashed border-border bg-card p-5 text-sm font-bold text-body">Đang tải thư viện SQLite...</p> : null}
-      {libraryError ? <div role="alert" className="rounded-2xl border-2 border-wrong bg-wrong-light p-5 text-sm font-bold text-wrong">{libraryError} <button type="button" onClick={refreshLibrary} className="ml-2 underline">Thử lại</button></div> : null}
+      {libraryLoading ? (
+        <p className="rounded-2xl border-2 border-dashed border-border bg-card p-5 text-sm font-bold text-body">
+          Đang tải thư viện SQLite...
+        </p>
+      ) : null}
+      {libraryError ? (
+        <div
+          role="alert"
+          className="rounded-2xl border-2 border-wrong bg-wrong-light p-5 text-sm font-bold text-wrong"
+        >
+          {libraryError}{" "}
+          <button type="button" onClick={refreshLibrary} className="ml-2 underline">
+            Thử lại
+          </button>
+        </div>
+      ) : null}
 
       {!libraryLoading && !libraryError && savedLessons.length > 0 ? (
         <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
-          <button type="button" onClick={()=>void practiceSpeaking()} className="mb-5 w-full rounded-2xl bg-primary px-5 py-4 text-left font-extrabold text-white">Practice Speaking <span className="block text-xs font-medium opacity-80">Continue an active session or practice the lesson that needs it most.</span></button>
+          <div className="mb-5 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => void practiceListening()}
+              className="rounded-2xl bg-primary px-5 py-4 text-left font-extrabold text-white"
+            >
+              {listeningDashboard?.active ? "Continue Listening" : "Start Listening"}
+              <span className="block text-xs font-medium opacity-80">
+                {listeningDashboard?.active
+                  ? `${listeningDashboard.active.title} · progress saved`
+                  : "Listen first, then check meaning and review sentences."}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void practiceSpeaking()}
+              className="rounded-2xl border-2 border-primary px-5 py-4 text-left font-extrabold text-primary"
+            >
+              Practice Speaking
+              <span className="block text-xs font-medium opacity-80">
+                Continue an active session or practice the lesson that needs it most.
+              </span>
+            </button>
+          </div>
+          {listeningDashboard?.review.length ? (
+            <div className="mb-5 rounded-2xl bg-highlight p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-extrabold text-heading">Re-listen</h2>
+                  <p className="text-xs text-muted">
+                    Recent lessons, with difficult sentences first.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {listeningDashboard.review.slice(0, 3).map((item) => (
+                  <div
+                    key={item.lessonId}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-card p-3"
+                  >
+                    <div>
+                      <p className="font-bold text-heading">{item.title}</p>
+                      <p className="text-xs text-muted">
+                        Last listened {new Date(item.lastListenedAt).toLocaleString("vi-VN")}
+                        {item.difficultCount
+                          ? ` · ${item.difficultCount} difficult sentence${item.difficultCount === 1 ? "" : "s"}`
+                          : ""}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void practiceListening(item.lessonId)}
+                      className="rounded-full border-2 border-primary px-3 py-2 text-xs font-extrabold text-primary"
+                    >
+                      Listen again
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-extrabold text-heading">
-                Bài học đã lưu
-              </h2>
+              <h2 className="text-lg font-extrabold text-heading">Bài học đã lưu</h2>
               <p className="mt-1 text-sm leading-6 text-body">
                 Bài mới tạo được lưu trong SQLite cục bộ, kèm tiến độ quiz.
               </p>
             </div>
-            <span className="text-xs font-bold text-muted">
-              {savedLessons.length} bài
-            </span>
+            <span className="text-xs font-bold text-muted">{savedLessons.length} bài</span>
           </div>
 
           <div className="mt-4 grid gap-3">
@@ -242,12 +408,9 @@ export default function LessonGenerator() {
               >
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h3 className="font-extrabold leading-6 text-heading">
-                      {savedLesson.title}
-                    </h3>
+                    <h3 className="font-extrabold leading-6 text-heading">{savedLesson.title}</h3>
                     <p className="mt-1 text-xs font-bold text-muted">
-                      Lưu lúc{" "}
-                      {new Date(savedLesson.updatedAt).toLocaleString("vi-VN")}
+                      Lưu lúc {new Date(savedLesson.updatedAt).toLocaleString("vi-VN")}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-2">
@@ -272,7 +435,11 @@ export default function LessonGenerator() {
           </div>
         </section>
       ) : null}
-      {!libraryLoading && !libraryError && savedLessons.length === 0 ? <p className="rounded-2xl border-2 border-border bg-card p-5 text-sm text-body">Thư viện SQLite chưa có bài học. Bạn có thể tạo bài mới hoặc chuyển dữ liệu cũ.</p> : null}
+      {!libraryLoading && !libraryError && savedLessons.length === 0 ? (
+        <p className="rounded-2xl border-2 border-border bg-card p-5 text-sm text-body">
+          Thư viện SQLite chưa có bài học. Bạn có thể tạo bài mới hoặc chuyển dữ liệu cũ.
+        </p>
+      ) : null}
 
       <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
         <div className="flex items-center justify-between gap-4">
@@ -381,7 +548,12 @@ export default function LessonGenerator() {
         >
           {error}
           {result && !activeSavedId ? (
-            <button type="button" disabled={saving} onClick={() => void showLesson(result)} className="ml-3 underline disabled:opacity-50">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void showLesson(result)}
+              className="ml-3 underline disabled:opacity-50"
+            >
               Thử lưu lại
             </button>
           ) : null}
@@ -396,9 +568,7 @@ export default function LessonGenerator() {
 
       {loading ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-highlight px-6 py-16 text-center">
-          <p className="text-lg font-extrabold text-heading">
-            Đang tạo bài học...
-          </p>
+          <p className="text-lg font-extrabold text-heading">Đang tạo bài học...</p>
           <p className="mt-2 text-sm text-body">
             Thường mất khoảng 20-40 giây, tùy độ dài transcript.
           </p>
@@ -408,11 +578,14 @@ export default function LessonGenerator() {
       {result ? (
         <section className="rounded-2xl border-2 border-border bg-card p-5 shadow-sm sm:p-6">
           <LessonDisplay
-            key={`${activeSavedId ?? result.lesson.title}-${openSpeakingOnLoad?"speaking":"lesson"}`}
+            key={`${activeSavedId ?? result.lesson.title}-${
+              openListeningOnLoad ? "listening" : openSpeakingOnLoad ? "speaking" : "lesson"
+            }`}
             lesson={result.lesson}
             lessonId={activeSavedId}
             videoId={result.videoId}
             initialSpeakingOpen={openSpeakingOnLoad}
+            initialListeningOpen={openListeningOnLoad}
           />
         </section>
       ) : null}

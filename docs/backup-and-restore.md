@@ -36,3 +36,17 @@ quiz giữ attempt lớn nhất và không hạ completion. Practice history uni
 chọn bản mới hơn khi trùng ID, sắp xếp ổn định theo thời gian và áp giới hạn 20 sau merge. Replace
 vẫn thay dữ liệu trong transaction và rollback toàn bộ khi lỗi. Speaking progress/session và audio
 cache giữ nguyên semantics.
+
+# Immersion Listening Loop compatibility
+
+Backup v1 adds optional `listeningSessions` and `listeningItemProgress` collections. Their absence is
+valid and imports as no listening history, so older backups remain compatible. Audio WAV files,
+audio-cache metadata, machine paths and temporary playback state remain excluded.
+
+Listening item remap uses source type plus stable source item UUID, then recalculates the listening
+item ID for the target lesson UUID. Invalid or orphan sources are rejected before import. Merge keeps
+maximum counters, never lowers recognition rank, unions aggregate transcript reveal, keeps completed
+sessions completed, and uses the newer record for notes, ratings and the separate difficult flag.
+Only one active listening session is retained per lesson; the farther step wins, then the newer
+timestamp. Replace deletes and restores listening rows inside the existing import transaction, so an
+insert or verification failure rolls back lessons, lesson progress, speaking and listening together.

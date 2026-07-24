@@ -57,3 +57,20 @@ Không tăng SQLite hoặc Progress schema version. Các field JSON vốn có đ
 Parser progress mặc định ba collection trên thành `{}`, `[]`, `[]` khi document v1 cũ thiếu field.
 Command validation kiểm tra item thuộc lesson, enum, timestamp, UUID, feedback shape và giới hạn
 string. SQLite repository áp dụng command bằng read-modify-write transaction.
+
+# Immersion Listening Loop tables
+
+The current SQLite schema is **8**; backup, Lesson and Progress remain version **1**.
+
+Schema v8 adds `listening_sessions` and `listening_item_progress`.
+
+- `listening_sessions` keeps one partial-unique active row per lesson, stable business step,
+  self-ratings/notes, session-scoped revealed item IDs and lifecycle timestamps.
+- `listening_item_progress` is keyed by `(lesson_id, listening_item_id)` with a unique source
+  type/source item identity, non-negative listen/loop counters, aggregate reveal, ranked recognition,
+  separate difficult flag and last-listened timestamp.
+- Both tables use lesson foreign keys with cascade delete. Recent-session and difficult-review
+  indexes support dashboard queries.
+
+Migration v8 runs in the existing `BEGIN IMMEDIATE` transaction wrapper. It does not rewrite Lesson
+v1, Progress v1, Speaking Ladder rows, audio-cache metadata or existing lesson/progress data.

@@ -11,6 +11,16 @@ import type { Lesson } from "../../types/lesson";
 import { CURRENT_LESSON_SCHEMA_VERSION } from "../../types/lesson";
 import { CURRENT_DATABASE_VERSION } from "../storage/migrations";
 import { extractPracticeCandidates } from "../../lib/speaking-practice";
+import {
+  COMPREHENSION_LEVELS,
+  FINAL_RELISTEN_RATINGS,
+  LISTENING_RECOGNITION_STATES,
+  LISTENING_STEPS,
+  extractListeningItems,
+  listeningItemId,
+  type ListeningRecognitionState,
+  type ListeningStep,
+} from "../../lib/listening-practice";
 
 export const BACKUP_FORMAT = "personal-english-lab";
 export const CURRENT_BACKUP_VERSION = 1;
@@ -29,6 +39,8 @@ export interface BackupDocument {
   settings: Record<string, never>;
   speakingProgress?: SpeakingProgressBackup[];
   speakingSessions?: SpeakingSessionBackup[];
+  listeningSessions?: ListeningSessionBackup[];
+  listeningItemProgress?: ListeningItemProgressBackup[];
   integrity: { algorithm: "SHA-256"; checksum: string };
 }
 export interface SpeakingProgressBackup {
@@ -60,6 +72,34 @@ export interface SpeakingSessionBackup {
   updatedAt: string;
   completedAt?: string;
 }
+export interface ListeningSessionBackup {
+  id: string;
+  lessonId: string;
+  status: "active" | "completed" | "cancelled";
+  currentStep: ListeningStep;
+  firstListenComprehension?: (typeof COMPREHENSION_LEVELS)[number];
+  firstListenNote: string;
+  secondListenComprehension?: (typeof COMPREHENSION_LEVELS)[number];
+  finalRelistenRating?: (typeof FINAL_RELISTEN_RATINGS)[number];
+  finalNote: string;
+  revealedItemIds: string[];
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+export interface ListeningItemProgressBackup {
+  id: string;
+  lessonId: string;
+  sourceType: string;
+  sourceItemId: string;
+  listenCount: number;
+  loopCount: number;
+  transcriptRevealed: boolean;
+  recognitionStatus: ListeningRecognitionState;
+  difficult: boolean;
+  lastListenedAt?: string;
+  updatedAt: string;
+}
 export interface BackupDiagnostic {
   code: string;
   path: string;
@@ -86,6 +126,11 @@ export interface ImportPreview {
 type BareBackup = Omit<BackupDocument, "integrity">;
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
+const iso = (value: unknown): value is string =>
+  typeof value === "string" && !Number.isNaN(Date.parse(value));
+const nonNegativeInteger = (value: unknown): value is number =>
+  Number.isInteger(value) && Number(value) >= 0;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (record(value))
@@ -120,6 +165,10 @@ function bare(document: BackupDocument): BareBackup {
   };
   if (document.speakingProgress !== undefined) result.speakingProgress = document.speakingProgress;
   if (document.speakingSessions !== undefined) result.speakingSessions = document.speakingSessions;
+  if (document.listeningSessions !== undefined)
+    result.listeningSessions = document.listeningSessions;
+  if (document.listeningItemProgress !== undefined)
+    result.listeningItemProgress = document.listeningItemProgress;
   return result;
 }
 
@@ -174,6 +223,10 @@ export function validateBackup(value: unknown): {
     });
   const ids = new Set<string>();
   const itemIds = new Map<string, Set<string>>();
+  const listeningItems = new Map<
+    string,
+    Map<string, ReturnType<typeof extractListeningItems>[number]>
+  >();
   if (Array.isArray(value.lessons))
     value.lessons.forEach((lesson, i) => {
       const result = validateCanonicalLesson(lesson);
@@ -205,6 +258,10 @@ export function validateBackup(value: unknown): {
               ...data.deepPractice.ankiCards,
             ].map((x) => x.id),
           ),
+        );
+        listeningItems.set(
+          data.id,
+          new Map(extractListeningItems(data).map((item) => [item.id, item])),
         );
       }
     });
@@ -241,6 +298,131 @@ export function validateBackup(value: unknown): {
           });
       }
     });
+  if (
+    value.listeningSessions !== undefined &&
+    (!Array.isArray(value.listeningSessions) || value.listeningSessions.length > 2000)
+  ) {
+    d.push({
+      code: "INVALID_LISTENING_SESSIONS",
+      path: "$.listeningSessions",
+      message: "Danh sách phiên luyện nghe không hợp lệ.",
+    });
+  }
+  const activeListeningLessons = new Set<string>();
+  const listeningSessionIds = new Set<string>();
+  if (Array.isArray(value.listeningSessions)) {
+    value.listeningSessions.forEach((session, index) => {
+      const path = `$.listeningSessions[${index}]`;
+      if (
+        !record(session) ||
+        typeof session.id !== "string" ||
+        !UUID.test(session.id) ||
+        listeningSessionIds.has(session.id) ||
+        typeof session.lessonId !== "string" ||
+        !ids.has(session.lessonId) ||
+        !["active", "completed", "cancelled"].includes(String(session.status)) ||
+        !LISTENING_STEPS.includes(session.currentStep as ListeningStep) ||
+        !Array.isArray(session.revealedItemIds) ||
+        session.revealedItemIds.some(
+          (itemId) =>
+            typeof itemId !== "string" ||
+            !listeningItems.get(String(session.lessonId))?.has(itemId),
+        ) ||
+        typeof session.firstListenNote !== "string" ||
+        session.firstListenNote.length > 1000 ||
+        typeof session.finalNote !== "string" ||
+        session.finalNote.length > 1000 ||
+        !iso(session.startedAt) ||
+        !iso(session.updatedAt) ||
+        (session.completedAt !== undefined && !iso(session.completedAt)) ||
+        (session.firstListenComprehension !== undefined &&
+          !COMPREHENSION_LEVELS.includes(
+            session.firstListenComprehension as (typeof COMPREHENSION_LEVELS)[number],
+          )) ||
+        (session.secondListenComprehension !== undefined &&
+          !COMPREHENSION_LEVELS.includes(
+            session.secondListenComprehension as (typeof COMPREHENSION_LEVELS)[number],
+          )) ||
+        (session.finalRelistenRating !== undefined &&
+          !FINAL_RELISTEN_RATINGS.includes(
+            session.finalRelistenRating as (typeof FINAL_RELISTEN_RATINGS)[number],
+          )) ||
+        (session.status === "active" && session.currentStep === "complete") ||
+        (session.status === "completed" &&
+          (session.currentStep !== "complete" || !iso(session.completedAt)))
+      ) {
+        d.push({
+          code: "INVALID_LISTENING_SESSION",
+          path,
+          message: "Phiên luyện nghe không hợp lệ hoặc tham chiếu sai bài học.",
+        });
+      } else if (session.status === "active") {
+        listeningSessionIds.add(session.id);
+        if (activeListeningLessons.has(session.lessonId)) {
+          d.push({
+            code: "DUPLICATE_ACTIVE_LISTENING_SESSION",
+            path,
+            message: "Một bài học có nhiều hơn một phiên luyện nghe đang hoạt động.",
+          });
+        }
+        activeListeningLessons.add(session.lessonId);
+      } else {
+        listeningSessionIds.add(session.id);
+      }
+    });
+  }
+  if (
+    value.listeningItemProgress !== undefined &&
+    (!Array.isArray(value.listeningItemProgress) || value.listeningItemProgress.length > 5000)
+  ) {
+    d.push({
+      code: "INVALID_LISTENING_PROGRESS",
+      path: "$.listeningItemProgress",
+      message: "Danh sách tiến độ câu luyện nghe không hợp lệ.",
+    });
+  }
+  if (Array.isArray(value.listeningItemProgress)) {
+    const progressKeys = new Set<string>();
+    value.listeningItemProgress.forEach((progress, index) => {
+      const path = `$.listeningItemProgress[${index}]`;
+      const lessonId = record(progress) ? progress.lessonId : undefined;
+      const target =
+        record(progress) && typeof lessonId === "string" && typeof progress.id === "string"
+          ? listeningItems.get(lessonId)?.get(progress.id)
+          : undefined;
+      const key =
+        record(progress) && typeof progress.lessonId === "string" && typeof progress.id === "string"
+          ? `${progress.lessonId}|${progress.id}`
+          : "";
+      if (
+        !record(progress) ||
+        !target ||
+        target.sourceType !== progress.sourceType ||
+        target.sourceItemId !== progress.sourceItemId ||
+        progress.id !==
+          listeningItemId(progress.lessonId as string, target.sourceType, target.sourceItemId) ||
+        !nonNegativeInteger(progress.listenCount) ||
+        !nonNegativeInteger(progress.loopCount) ||
+        progress.loopCount > progress.listenCount ||
+        typeof progress.transcriptRevealed !== "boolean" ||
+        !LISTENING_RECOGNITION_STATES.includes(
+          progress.recognitionStatus as ListeningRecognitionState,
+        ) ||
+        typeof progress.difficult !== "boolean" ||
+        (progress.lastListenedAt !== undefined && !iso(progress.lastListenedAt)) ||
+        !iso(progress.updatedAt) ||
+        progressKeys.has(key)
+      ) {
+        d.push({
+          code: "INVALID_LISTENING_ITEM_PROGRESS",
+          path,
+          message: "Tiến độ câu luyện nghe không hợp lệ hoặc không thuộc bài học.",
+        });
+      } else {
+        progressKeys.add(key);
+      }
+    });
+  }
   if (d.length) return { diagnostics: d };
   const document = value as unknown as BackupDocument;
   if (
@@ -327,6 +509,61 @@ export function exportBackup(
       updatedAt: String(r.updated_at),
       ...(r.completed_at ? { completedAt: String(r.completed_at) } : {}),
     }));
+    const listeningSessions = (
+      database
+        .prepare(
+          "SELECT s.* FROM listening_sessions s JOIN lessons l ON l.id=s.lesson_id WHERE l.deleted_at IS NULL ORDER BY s.lesson_id,s.started_at",
+        )
+        .all() as Record<string, unknown>[]
+    ).map((row) => ({
+      id: String(row.id),
+      lessonId: String(row.lesson_id),
+      status: row.status as ListeningSessionBackup["status"],
+      currentStep: row.current_step as ListeningStep,
+      ...(row.first_listen_comprehension
+        ? {
+            firstListenComprehension:
+              row.first_listen_comprehension as ListeningSessionBackup["firstListenComprehension"],
+          }
+        : {}),
+      firstListenNote: String(row.first_listen_note),
+      ...(row.second_listen_comprehension
+        ? {
+            secondListenComprehension:
+              row.second_listen_comprehension as ListeningSessionBackup["secondListenComprehension"],
+          }
+        : {}),
+      ...(row.final_relisten_rating
+        ? {
+            finalRelistenRating:
+              row.final_relisten_rating as ListeningSessionBackup["finalRelistenRating"],
+          }
+        : {}),
+      finalNote: String(row.final_note),
+      revealedItemIds: JSON.parse(String(row.revealed_item_ids_json)) as string[],
+      startedAt: String(row.started_at),
+      updatedAt: String(row.updated_at),
+      ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+    }));
+    const listeningItemProgress = (
+      database
+        .prepare(
+          "SELECT p.* FROM listening_item_progress p JOIN lessons l ON l.id=p.lesson_id WHERE l.deleted_at IS NULL ORDER BY p.lesson_id,p.id",
+        )
+        .all() as Record<string, unknown>[]
+    ).map((row) => ({
+      id: String(row.id),
+      lessonId: String(row.lesson_id),
+      sourceType: String(row.source_type),
+      sourceItemId: String(row.source_item_id),
+      listenCount: Number(row.listen_count),
+      loopCount: Number(row.loop_count),
+      transcriptRevealed: Boolean(row.transcript_revealed),
+      recognitionStatus: row.recognition_status as ListeningRecognitionState,
+      difficult: Boolean(row.difficult),
+      ...(row.last_listened_at ? { lastListenedAt: String(row.last_listened_at) } : {}),
+      updatedAt: String(row.updated_at),
+    }));
     const payload: BareBackup = {
       backupFormat: BACKUP_FORMAT,
       backupVersion: 1,
@@ -339,6 +576,8 @@ export function exportBackup(
       progress,
       speakingProgress,
       speakingSessions,
+      listeningSessions,
+      listeningItemProgress,
       settings: {},
     };
     const document: BackupDocument = {
@@ -528,6 +767,88 @@ export function mergeSpeakingProgress(
     updatedAt: Date.parse(a.updatedAt) >= Date.parse(b.updatedAt) ? a.updatedAt : b.updatedAt,
   };
 }
+const listeningRecognitionRank: Record<ListeningRecognitionState, number> = {
+  not_started: 0,
+  heard: 1,
+  recognized: 2,
+};
+const listeningStepRank = new Map(LISTENING_STEPS.map((step, index) => [step, index]));
+
+export function mergeListeningItemProgress(
+  current: ListeningItemProgressBackup | undefined,
+  incoming: ListeningItemProgressBackup,
+): ListeningItemProgressBackup {
+  if (!current) return incoming;
+  const newer =
+    Date.parse(incoming.updatedAt) >= Date.parse(current.updatedAt) ? incoming : current;
+  const recognitionStatus =
+    listeningRecognitionRank[current.recognitionStatus] >=
+    listeningRecognitionRank[incoming.recognitionStatus]
+      ? current.recognitionStatus
+      : incoming.recognitionStatus;
+  const lastListenedAt = !current.lastListenedAt
+    ? incoming.lastListenedAt
+    : !incoming.lastListenedAt
+      ? current.lastListenedAt
+      : Date.parse(current.lastListenedAt) >= Date.parse(incoming.lastListenedAt)
+        ? current.lastListenedAt
+        : incoming.lastListenedAt;
+  return {
+    ...newer,
+    listenCount: Math.max(current.listenCount, incoming.listenCount),
+    loopCount: Math.max(current.loopCount, incoming.loopCount),
+    transcriptRevealed: current.transcriptRevealed || incoming.transcriptRevealed,
+    recognitionStatus,
+    difficult: recognitionStatus === "recognized" ? false : newer.difficult,
+    ...(lastListenedAt ? { lastListenedAt } : {}),
+    updatedAt:
+      Date.parse(current.updatedAt) >= Date.parse(incoming.updatedAt)
+        ? current.updatedAt
+        : incoming.updatedAt,
+  };
+}
+
+export function mergeListeningSession(
+  current: ListeningSessionBackup | undefined,
+  incoming: ListeningSessionBackup,
+): ListeningSessionBackup {
+  if (!current) return incoming;
+  const newer =
+    Date.parse(incoming.updatedAt) >= Date.parse(current.updatedAt) ? incoming : current;
+  const farther =
+    (listeningStepRank.get(current.currentStep) ?? 0) >=
+    (listeningStepRank.get(incoming.currentStep) ?? 0)
+      ? current
+      : incoming;
+  const completed =
+    current.status === "completed"
+      ? current
+      : incoming.status === "completed"
+        ? incoming
+        : undefined;
+  const completedAt = !current.completedAt
+    ? incoming.completedAt
+    : !incoming.completedAt
+      ? current.completedAt
+      : Date.parse(current.completedAt) >= Date.parse(incoming.completedAt)
+        ? current.completedAt
+        : incoming.completedAt;
+  return {
+    ...newer,
+    status: completed ? "completed" : newer.status,
+    currentStep: completed ? "complete" : farther.currentStep,
+    revealedItemIds: [...new Set([...current.revealedItemIds, ...incoming.revealedItemIds])],
+    startedAt:
+      Date.parse(current.startedAt) <= Date.parse(incoming.startedAt)
+        ? current.startedAt
+        : incoming.startedAt,
+    updatedAt:
+      Date.parse(current.updatedAt) >= Date.parse(incoming.updatedAt)
+        ? current.updatedAt
+        : incoming.updatedAt,
+    ...(completedAt ? { completedAt } : {}),
+  };
+}
 function dbSpeaking(row: Record<string, unknown>): SpeakingProgressBackup {
   return {
     lessonId: String(row.lesson_id),
@@ -549,6 +870,55 @@ function dbSpeaking(row: Record<string, unknown>): SpeakingProgressBackup {
   };
 }
 
+function dbListeningProgress(row: Record<string, unknown>): ListeningItemProgressBackup {
+  return {
+    id: String(row.id),
+    lessonId: String(row.lesson_id),
+    sourceType: String(row.source_type),
+    sourceItemId: String(row.source_item_id),
+    listenCount: Number(row.listen_count),
+    loopCount: Number(row.loop_count),
+    transcriptRevealed: Boolean(row.transcript_revealed),
+    recognitionStatus: row.recognition_status as ListeningRecognitionState,
+    difficult: Boolean(row.difficult),
+    ...(row.last_listened_at ? { lastListenedAt: String(row.last_listened_at) } : {}),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function dbListeningSession(row: Record<string, unknown>): ListeningSessionBackup {
+  return {
+    id: String(row.id),
+    lessonId: String(row.lesson_id),
+    status: row.status as ListeningSessionBackup["status"],
+    currentStep: row.current_step as ListeningStep,
+    ...(row.first_listen_comprehension
+      ? {
+          firstListenComprehension:
+            row.first_listen_comprehension as ListeningSessionBackup["firstListenComprehension"],
+        }
+      : {}),
+    firstListenNote: String(row.first_listen_note),
+    ...(row.second_listen_comprehension
+      ? {
+          secondListenComprehension:
+            row.second_listen_comprehension as ListeningSessionBackup["secondListenComprehension"],
+        }
+      : {}),
+    ...(row.final_relisten_rating
+      ? {
+          finalRelistenRating:
+            row.final_relisten_rating as ListeningSessionBackup["finalRelistenRating"],
+        }
+      : {}),
+    finalNote: String(row.final_note),
+    revealedItemIds: JSON.parse(String(row.revealed_item_ids_json)) as string[],
+    startedAt: String(row.started_at),
+    updatedAt: String(row.updated_at),
+    ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+  };
+}
+
 export function importBackup(
   database: DatabaseSync,
   value: unknown,
@@ -564,7 +934,13 @@ export function importBackup(
   try {
     if (mode === "replace") {
       database.exec(
-        "DELETE FROM lesson_progress; DELETE FROM legacy_migration_items; DELETE FROM lessons;",
+        `DELETE FROM listening_item_progress;
+         DELETE FROM listening_sessions;
+         DELETE FROM speaking_progress;
+         DELETE FROM speaking_sessions;
+         DELETE FROM lesson_progress;
+         DELETE FROM legacy_migration_items;
+         DELETE FROM lessons;`,
       );
     }
     const current = existing(database);
@@ -710,6 +1086,154 @@ export function importBackup(
           source.completedAt ?? null,
         );
     }
+    for (const source of doc.listeningItemProgress ?? []) {
+      const id = remap.get(source.lessonId);
+      if (!id) continue;
+      const targetLessonRow = database
+        .prepare("SELECT lesson_json FROM lessons WHERE id=?")
+        .get(id) as { lesson_json: string } | undefined;
+      if (!targetLessonRow) continue;
+      const target = extractListeningItems(JSON.parse(targetLessonRow.lesson_json) as Lesson).find(
+        (item) =>
+          item.sourceType === source.sourceType && item.sourceItemId === source.sourceItemId,
+      );
+      if (!target) continue;
+      const incoming: ListeningItemProgressBackup = {
+        ...source,
+        id: target.id,
+        lessonId: id,
+        sourceType: target.sourceType,
+        sourceItemId: target.sourceItemId,
+      };
+      const old = database
+        .prepare("SELECT * FROM listening_item_progress WHERE lesson_id=? AND id=?")
+        .get(id, target.id) as Record<string, unknown> | undefined;
+      const merged =
+        mode === "merge"
+          ? mergeListeningItemProgress(old ? dbListeningProgress(old) : undefined, incoming)
+          : incoming;
+      database
+        .prepare(
+          `INSERT INTO listening_item_progress(
+            id,lesson_id,source_type,source_item_id,listen_count,loop_count,
+            transcript_revealed,recognition_status,difficult,last_listened_at,updated_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(lesson_id,id) DO UPDATE SET
+            source_type=excluded.source_type,source_item_id=excluded.source_item_id,
+            listen_count=excluded.listen_count,loop_count=excluded.loop_count,
+            transcript_revealed=excluded.transcript_revealed,
+            recognition_status=excluded.recognition_status,difficult=excluded.difficult,
+            last_listened_at=excluded.last_listened_at,updated_at=excluded.updated_at`,
+        )
+        .run(
+          merged.id,
+          merged.lessonId,
+          merged.sourceType,
+          merged.sourceItemId,
+          merged.listenCount,
+          merged.loopCount,
+          merged.transcriptRevealed ? 1 : 0,
+          merged.recognitionStatus,
+          merged.difficult ? 1 : 0,
+          merged.lastListenedAt ?? null,
+          merged.updatedAt,
+        );
+    }
+    for (const source of doc.listeningSessions ?? []) {
+      const id = remap.get(source.lessonId);
+      if (!id) continue;
+      const oldLesson = doc.lessons.find((lesson) => lesson.id === source.lessonId);
+      const targetLessonRow = database
+        .prepare("SELECT lesson_json FROM lessons WHERE id=?")
+        .get(id) as { lesson_json: string } | undefined;
+      if (!oldLesson || !targetLessonRow) continue;
+      const oldItems = extractListeningItems(oldLesson);
+      const targetItems = extractListeningItems(JSON.parse(targetLessonRow.lesson_json) as Lesson);
+      const mappedReveals = source.revealedItemIds.flatMap((oldItemId) => {
+        const oldItem = oldItems.find((item) => item.id === oldItemId);
+        if (!oldItem) return [];
+        const target = targetItems.find(
+          (item) =>
+            item.sourceType === oldItem.sourceType && item.sourceItemId === oldItem.sourceItemId,
+        );
+        return target ? [target.id] : [];
+      });
+      const incoming: ListeningSessionBackup = {
+        ...source,
+        lessonId: id,
+        revealedItemIds: mappedReveals,
+      };
+      let sessionId = source.id;
+      const idCollision = database
+        .prepare("SELECT lesson_id FROM listening_sessions WHERE id=?")
+        .get(sessionId) as { lesson_id: string } | undefined;
+      if (idCollision && idCollision.lesson_id !== id) sessionId = randomUUID();
+      const same = database
+        .prepare("SELECT * FROM listening_sessions WHERE id=? AND lesson_id=?")
+        .get(sessionId, id) as Record<string, unknown> | undefined;
+      let merged =
+        mode === "merge"
+          ? mergeListeningSession(same ? dbListeningSession(same) : undefined, {
+              ...incoming,
+              id: sessionId,
+            })
+          : { ...incoming, id: sessionId };
+      if (merged.status === "active") {
+        const localActive = database
+          .prepare(
+            "SELECT * FROM listening_sessions WHERE lesson_id=? AND status='active' AND id<>?",
+          )
+          .get(id, sessionId) as Record<string, unknown> | undefined;
+        if (localActive) {
+          const local = dbListeningSession(localActive);
+          const localIsFarther =
+            (listeningStepRank.get(local.currentStep) ?? 0) >
+              (listeningStepRank.get(merged.currentStep) ?? 0) ||
+            ((listeningStepRank.get(local.currentStep) ?? 0) ===
+              (listeningStepRank.get(merged.currentStep) ?? 0) &&
+              Date.parse(local.updatedAt) >= Date.parse(merged.updatedAt));
+          if (mode === "merge" && localIsFarther) continue;
+          database
+            .prepare("UPDATE listening_sessions SET status='cancelled',updated_at=? WHERE id=?")
+            .run(now, local.id);
+        }
+      }
+      if (merged.status === "completed") {
+        merged = { ...merged, currentStep: "complete" };
+      }
+      database
+        .prepare(
+          `INSERT INTO listening_sessions(
+            id,lesson_id,status,current_step,first_listen_comprehension,first_listen_note,
+            second_listen_comprehension,final_relisten_rating,final_note,
+            revealed_item_ids_json,started_at,updated_at,completed_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            lesson_id=excluded.lesson_id,status=excluded.status,current_step=excluded.current_step,
+            first_listen_comprehension=excluded.first_listen_comprehension,
+            first_listen_note=excluded.first_listen_note,
+            second_listen_comprehension=excluded.second_listen_comprehension,
+            final_relisten_rating=excluded.final_relisten_rating,final_note=excluded.final_note,
+            revealed_item_ids_json=excluded.revealed_item_ids_json,
+            started_at=excluded.started_at,updated_at=excluded.updated_at,
+            completed_at=excluded.completed_at`,
+        )
+        .run(
+          merged.id,
+          merged.lessonId,
+          merged.status,
+          merged.currentStep,
+          merged.firstListenComprehension ?? null,
+          merged.firstListenNote,
+          merged.secondListenComprehension ?? null,
+          merged.finalRelistenRating ?? null,
+          merged.finalNote,
+          JSON.stringify(merged.revealedItemIds),
+          merged.startedAt,
+          merged.updatedAt,
+          merged.completedAt ?? null,
+        );
+    }
     for (const [oldId, id] of remap) {
       const l = database.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as
         { lesson_json: string } | undefined;
@@ -725,6 +1249,40 @@ export function importBackup(
       if (!checked?.success || checked.data?.lessonId !== id)
         throw new Error(`Verify progress tháº¥t báº¡i: ${source.lessonId}`);
     }
+    for (const id of new Set(remap.values())) {
+      const targetRow = database.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as
+        { lesson_json: string } | undefined;
+      if (!targetRow) throw new Error(`Verify listening lesson thất bại: ${id}`);
+      const validItems = new Map(
+        extractListeningItems(JSON.parse(targetRow.lesson_json) as Lesson).map((item) => [
+          item.id,
+          item,
+        ]),
+      );
+      const rows = database
+        .prepare("SELECT * FROM listening_item_progress WHERE lesson_id=?")
+        .all(id) as Record<string, unknown>[];
+      for (const row of rows) {
+        const item = validItems.get(String(row.id));
+        if (
+          !item ||
+          item.sourceType !== row.source_type ||
+          item.sourceItemId !== row.source_item_id ||
+          Number(row.listen_count) < 0 ||
+          Number(row.loop_count) < 0
+        )
+          throw new Error(`Verify listening progress thất bại: ${id}`);
+      }
+      const activeCount = database
+        .prepare(
+          "SELECT COUNT(*) count FROM listening_sessions WHERE lesson_id=? AND status='active'",
+        )
+        .get(id) as { count: number };
+      if (Number(activeCount.count) > 1)
+        throw new Error(`Verify active listening session thất bại: ${id}`);
+    }
+    const foreignKeyError = database.prepare("PRAGMA foreign_key_check").get();
+    if (foreignKeyError) throw new Error("Verify foreign key sau import thất bại.");
     const importId = randomUUID();
     database
       .prepare("INSERT INTO import_receipts VALUES(?,?,?,?,?,?,?,?)")

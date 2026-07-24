@@ -23,12 +23,18 @@ npm run smoke:storage
 npm run smoke:backup
 npm run smoke:audio
 npm run smoke:speaking
+npm run smoke:listening
 npm run build
 ```
 
 Khi sửa lesson progress, phải test tối thiểu: stable item ID, reload, cô lập giữa lessons, command
 tuần tự không lost update, legacy progress defaults, backup Merge/Replace và history cap. Tab visited
 không được gắn nhãn hoàn thành. Feedback request lỗi không được tạo practice history.
+
+Khi sửa listening, phải kiểm tra: transcript ẩn mặc định; First/Second self-rating lưu riêng;
+resume đúng step; reveal từng câu/reveal all; loop 3/5 dừng và không request audio trùng; stable source
+item; completed session không bị mutate; Practice Again giữ aggregate; lesson isolation; dashboard
+Continue/Re-listen; Speaking Ladder giữ progress riêng; backup cũ, Merge, Replace và conflict remap.
 
 Để kiểm tra audio development, cấu hình Kokoro một lần trong `.env.local`, chạy
 `npm run dev:full`, rồi xác nhận `/health`, port 5050, Kokoro playback, browser fallback và khả

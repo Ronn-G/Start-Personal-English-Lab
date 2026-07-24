@@ -1,5 +1,11 @@
 # Personal English Lab — AI handoff
 
+Immersion Listening Loop v1 raises SQLite to schema 8. `/api/listening`, `ListeningService` and
+`ListeningPractice` add resumable First Listen → Check Meaning → Second Listen → Sentence Review →
+Final Re-listen without replacing Speaking Ladder. Listening items derive from stable Lesson v1
+source UUIDs, audio reuses the Kokoro cache/coalescing/fallback, and backup v1 has optional listening
+collections. Run `npm run smoke:listening` with the existing verification suite.
+
 Personal English Lab `0.1.0` là prototype local-first dùng Next.js App Router, React, TypeScript
 và Node.js 24. Source of truth là repository này; không sửa artifact portable.
 

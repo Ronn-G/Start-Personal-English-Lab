@@ -128,6 +128,49 @@ export async function POST(request: Request) {
     const lesson = lessonRow(body.lessonId),
       tasks = buildSpeakingSession(lesson),
       now = new Date().toISOString();
+    if (body.action === "practice_item") {
+      if (typeof body.sourceType !== "string" || typeof body.sourceItemId !== "string")
+        throw new StorageError("VALIDATION_ERROR", "Thiếu nguồn câu luyện nói.");
+      const target = tasks.find(
+        (task) => task.sourceType === body.sourceType && task.sourceItemId === body.sourceItemId,
+      );
+      if (!target)
+        throw new StorageError(
+          "VALIDATION_ERROR",
+          "Câu này không đủ điều kiện cho Speaking Ladder.",
+        );
+      db.exec("BEGIN IMMEDIATE");
+      let id: string;
+      try {
+        const active = db
+          .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active'")
+          .get(lesson.id) as unknown as DbSession | undefined;
+        if (active) {
+          const activeIds = JSON.parse(active.item_ids_json) as string[];
+          if (activeIds.length === 1 && activeIds[0] === target.id) {
+            db.exec("COMMIT");
+            return NextResponse.json(response(lesson, active));
+          }
+          db.prepare(
+            "UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE id=? AND status='active'",
+          ).run(now, active.id);
+        }
+        id = randomUUID();
+        db.prepare(
+          "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
+        ).run(id, lesson.id, JSON.stringify([target.id]), now, now);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return NextResponse.json(
+        response(
+          lesson,
+          db.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(id) as unknown as DbSession,
+        ),
+      );
+    }
     if (body.action === "start") {
       if (!tasks.length)
         return NextResponse.json({ empty: true, lessonTitle: lesson.title, tasks: [] });

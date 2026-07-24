@@ -19,6 +19,7 @@ import { audioClient } from "@/lib/audio-client";
 import { selectLessonAudioPreloadItems } from "@/lib/audio-domain";
 import AudioCacheControls from "@/components/AudioCacheControls";
 import SpeakingPractice from "@/components/SpeakingPractice";
+import ListeningPractice from "@/components/ListeningPractice";
 
 type LessonTab = "vocabulary" | "idioms" | "grammar" | "practice" | "quiz";
 
@@ -35,6 +36,7 @@ interface LessonDisplayProps {
   lessonId?: string;
   videoId?: string;
   initialSpeakingOpen?: boolean;
+  initialListeningOpen?: boolean;
 }
 
 export default function LessonDisplay({
@@ -42,10 +44,20 @@ export default function LessonDisplay({
   lessonId,
   videoId,
   initialSpeakingOpen = false,
+  initialListeningOpen = false,
 }: LessonDisplayProps) {
   const storageLessonId = lessonId ?? lesson.id;
   const [activeTab, setActiveTab] = useState<LessonTab>("vocabulary");
   const [speakingOpen, setSpeakingOpen] = useState(initialSpeakingOpen);
+  const [listeningOpen, setListeningOpen] = useState(initialListeningOpen);
+  const [returnToListening, setReturnToListening] = useState(false);
+  const [listeningEntry, setListeningEntry] = useState<{
+    label: string;
+    detail: string;
+  }>({
+    label: "Start Listening Practice",
+    detail: "Listen first, then review meaning and sentences",
+  });
   const [speakingEntry, setSpeakingEntry] = useState<{ label: string; detail: string }>({
     label: "Start Speaking Practice",
     detail: "5–10 minutes · practice from this lesson",
@@ -151,6 +163,36 @@ export default function LessonDisplay({
       })
       .catch(() => undefined);
   }, [storageLessonId, speakingOpen]);
+  useEffect(() => {
+    fetch("/api/listening", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "status", lessonId: storageLessonId }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        const session = data.session;
+        if (session?.status === "active") {
+          setListeningEntry({
+            label: "Continue Listening Practice",
+            detail: `${String(session.currentStep)
+              .replaceAll("_", " ")
+              .replace(/\b\w/g, (letter) => letter.toUpperCase())} · progress saved`,
+          });
+        } else if (session?.status === "completed") {
+          setListeningEntry({
+            label: "Practice Again",
+            detail: `${data.items?.length ?? 0} sentences · previous session complete`,
+          });
+        } else {
+          setListeningEntry({
+            label: "Start Listening Practice",
+            detail: `${data.items?.length ?? 0} sentences · listen before reading`,
+          });
+        }
+      })
+      .catch(() => undefined);
+  }, [listeningOpen, storageLessonId]);
 
   const persistCommand = useCallback(
     (command: LessonProgressCommand, optimistic = true) => {
@@ -231,22 +273,58 @@ export default function LessonDisplay({
   const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : null;
 
   if (speakingOpen)
-    return <SpeakingPractice lessonId={storageLessonId} onExit={() => setSpeakingOpen(false)} />;
+    return (
+      <SpeakingPractice
+        lessonId={storageLessonId}
+        onExit={() => {
+          setSpeakingOpen(false);
+          if (returnToListening) {
+            setReturnToListening(false);
+            setListeningOpen(true);
+          }
+        }}
+      />
+    );
+  if (listeningOpen)
+    return (
+      <ListeningPractice
+        lessonId={storageLessonId}
+        onExit={() => setListeningOpen(false)}
+        onOpenSpeaking={() => {
+          setReturnToListening(true);
+          setListeningOpen(false);
+          setSpeakingOpen(true);
+        }}
+      />
+    );
   return (
     <div>
       <header className="mb-8">
-        <div className="mb-5 rounded-2xl border-2 border-primary bg-highlight p-4 sm:flex sm:items-center sm:justify-between">
-          <div>
-            <p className="font-extrabold text-heading">Guided Speaking Ladder</p>
-            <p className="text-sm text-body">{speakingEntry.detail}</p>
+        <div className="mb-5 rounded-2xl border-2 border-primary bg-highlight p-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="font-extrabold text-heading">Immersion Listening Loop</p>
+              <p className="text-sm text-body">{listeningEntry.detail}</p>
+              <button
+                type="button"
+                onClick={() => setListeningOpen(true)}
+                className="mt-3 rounded-full bg-primary px-5 py-3 font-extrabold text-white"
+              >
+                {listeningEntry.label}
+              </button>
+            </div>
+            <div className="border-t border-border pt-4 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+              <p className="font-extrabold text-heading">Guided Speaking Ladder</p>
+              <p className="text-sm text-body">{speakingEntry.detail}</p>
+              <button
+                type="button"
+                onClick={() => setSpeakingOpen(true)}
+                className="mt-3 rounded-full border-2 border-primary px-5 py-3 font-extrabold text-primary"
+              >
+                {speakingEntry.label}
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setSpeakingOpen(true)}
-            className="mt-3 rounded-full bg-primary px-5 py-3 font-extrabold text-white sm:mt-0"
-          >
-            {speakingEntry.label}
-          </button>
         </div>
         {audioProgress && audioProgress.ready < audioProgress.total ? (
           <p role="status" className="mb-3 text-xs font-bold text-muted">
