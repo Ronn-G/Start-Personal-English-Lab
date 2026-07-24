@@ -3,11 +3,14 @@
 import { useMemo, useState } from "react";
 
 import SpeakButton from "@/components/lesson/SpeakButton";
+import type { PracticeHistoryItem } from "@/lib/lesson-progress";
 import type { ExampleSentence, PracticeFeedbackResponse } from "@/types/lesson";
 
 interface ActivePracticeSectionProps {
   lessonTitle: string;
   prompts: ExampleSentence[];
+  history: PracticeHistoryItem[];
+  onComplete: (record: PracticeHistoryItem) => void;
 }
 
 type PracticeMode = "writing" | "speaking";
@@ -46,6 +49,8 @@ declare global {
 export default function ActivePracticeSection({
   lessonTitle,
   prompts,
+  history,
+  onComplete,
 }: ActivePracticeSectionProps) {
   const [mode, setMode] = useState<PracticeMode>("writing");
   const [promptIndex, setPromptIndex] = useState(0);
@@ -53,8 +58,7 @@ export default function ActivePracticeSection({
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [feedback, setFeedback] =
-    useState<PracticeFeedbackResponse["feedback"] | null>(null);
+  const [feedback, setFeedback] = useState<PracticeFeedbackResponse["feedback"] | null>(null);
 
   const currentPrompt = prompts[promptIndex];
   const speechSupported = useMemo(() => {
@@ -96,12 +100,17 @@ export default function ActivePracticeSection({
       }
 
       setFeedback(data.feedback);
+      onComplete({
+        id: crypto.randomUUID(),
+        itemId: currentPrompt.id,
+        mode,
+        prompt: currentPrompt.sentence,
+        userAnswer: answer.trim(),
+        feedback: data.feedback,
+        occurredAt: new Date().toISOString(),
+      });
     } catch (feedbackError) {
-      setError(
-        feedbackError instanceof Error
-          ? feedbackError.message
-          : "Không thể tạo phản hồi.",
-      );
+      setError(feedbackError instanceof Error ? feedbackError.message : "Không thể tạo phản hồi.");
     } finally {
       setLoading(false);
     }
@@ -111,7 +120,9 @@ export default function ActivePracticeSection({
     const SpeechApi = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechApi) {
-      setError("Trình duyệt này chưa hỗ trợ ghi âm thành chữ. Bạn có thể gõ câu nói của mình vào ô bên dưới.");
+      setError(
+        "Trình duyệt này chưa hỗ trợ ghi âm thành chữ. Bạn có thể gõ câu nói của mình vào ô bên dưới.",
+      );
       return;
     }
 
@@ -145,9 +156,7 @@ export default function ActivePracticeSection({
     <section className="rounded-2xl border-2 border-border bg-card p-6 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h3 className="text-xl font-extrabold text-heading">
-            Luyện viết và nói có phản hồi
-          </h3>
+          <h3 className="text-xl font-extrabold text-heading">Luyện viết và nói có phản hồi</h3>
           <p className="mt-2 text-sm leading-6 text-body">
             Chọn một câu mẫu, tự viết hoặc nói lại theo ý của bạn, rồi nhận góp ý.
           </p>
@@ -164,9 +173,7 @@ export default function ActivePracticeSection({
                 setError(null);
               }}
               className={`rounded-full px-4 py-2 text-xs font-extrabold uppercase tracking-wide transition ease-smooth ${
-                mode === item
-                  ? "bg-primary text-white shadow-sm"
-                  : "text-primary hover:bg-card"
+                mode === item ? "bg-primary text-white shadow-sm" : "text-primary hover:bg-card"
               }`}
             >
               {item === "writing" ? "Viết" : "Nói"}
@@ -200,9 +207,7 @@ export default function ActivePracticeSection({
 
       <div className="mt-4 rounded-xl bg-highlight p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <p className="text-base font-bold leading-7 text-heading">
-            {currentPrompt.sentence}
-          </p>
+          <p className="text-base font-bold leading-7 text-heading">{currentPrompt.sentence}</p>
           <SpeakButton text={currentPrompt.sentence} label="Nghe mẫu" rate={0.82} />
         </div>
         <p className="mt-2 text-sm font-bold leading-6 text-translation">
@@ -268,12 +273,16 @@ export default function ActivePracticeSection({
 
       {!speechSupported && mode === "speaking" ? (
         <p className="mt-3 text-xs font-bold text-muted">
-          Trình duyệt chưa hỗ trợ ghi âm thành chữ, nhưng bạn vẫn có thể gõ câu đã nói để nhận phản hồi.
+          Trình duyệt chưa hỗ trợ ghi âm thành chữ, nhưng bạn vẫn có thể gõ câu đã nói để nhận phản
+          hồi.
         </p>
       ) : null}
 
       {error ? (
-        <div className="mt-4 rounded-xl border-2 border-wrong bg-wrong-light px-4 py-3 text-sm font-bold text-wrong">
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border-2 border-wrong bg-wrong-light px-4 py-3 text-sm font-bold text-wrong"
+        >
           {error}
         </div>
       ) : null}
@@ -281,9 +290,7 @@ export default function ActivePracticeSection({
       {feedback ? (
         <div className="mt-5 rounded-2xl border-2 border-border bg-background p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <h4 className="text-lg font-extrabold text-heading">
-              Phản hồi của coach
-            </h4>
+            <h4 className="text-lg font-extrabold text-heading">Phản hồi của coach</h4>
             <span className="w-fit rounded-full bg-correct-light px-3 py-1 text-sm font-extrabold text-primary">
               {feedback.score}/10
             </span>
@@ -315,11 +322,7 @@ export default function ActivePracticeSection({
               {feedback.improvedVersion}
             </p>
             <div className="mt-3">
-              <SpeakButton
-                text={feedback.improvedVersion}
-                label="Nghe câu sửa"
-                rate={0.82}
-              />
+              <SpeakButton text={feedback.improvedVersion} label="Nghe câu sửa" rate={0.82} />
             </div>
           </div>
 
@@ -328,6 +331,35 @@ export default function ActivePracticeSection({
           </p>
         </div>
       ) : null}
+
+      <div className="mt-6 border-t-2 border-border pt-5">
+        <h4 className="text-lg font-extrabold text-heading">Lịch sử gần đây</h4>
+        {history.length === 0 ? (
+          <p className="mt-2 text-sm text-muted">Chưa có bài luyện nào được lưu.</p>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {history.slice(0, 5).map((item) => (
+              <details
+                key={item.id}
+                className="rounded-xl border-2 border-border bg-background p-4"
+              >
+                <summary className="cursor-pointer text-sm font-extrabold text-heading">
+                  {item.mode === "writing" ? "Viết" : "Nói"} ·{" "}
+                  {new Date(item.occurredAt).toLocaleString("vi-VN")}
+                </summary>
+                <p className="mt-3 text-sm font-bold text-heading">{item.prompt}</p>
+                <p className="mt-2 text-sm leading-6 text-body">{item.userAnswer}</p>
+                <p className="mt-3 text-sm font-bold text-primary">
+                  {item.feedback.score}/10 · {item.feedback.overall}
+                </p>
+                <p className="mt-2 text-sm leading-6 text-body">
+                  Câu tự nhiên hơn: {item.feedback.improvedVersion}
+                </p>
+              </details>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

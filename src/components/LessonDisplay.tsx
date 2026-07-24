@@ -7,7 +7,12 @@ import GrammarSection from "@/components/lesson/GrammarSection";
 import IdiomsSection from "@/components/lesson/IdiomsSection";
 import QuizSection from "@/components/lesson/QuizSection";
 import VocabularyCards from "@/components/lesson/VocabularyCards";
-import { CURRENT_PROGRESS_SCHEMA_VERSION, type LessonProgress } from "@/lib/lesson-progress";
+import {
+  applyLessonProgressCommand,
+  emptyLessonProgress,
+  type LessonProgress,
+  type LessonProgressCommand,
+} from "@/lib/lesson-progress";
 import { storageClient } from "@/lib/storage-client";
 import type { Lesson } from "@/types/lesson";
 import { audioClient } from "@/lib/audio-client";
@@ -32,25 +37,31 @@ interface LessonDisplayProps {
   initialSpeakingOpen?: boolean;
 }
 
-function emptyProgress(lessonId: string, timestamp: string): LessonProgress {
-  return { lessonId, progressVersion: CURRENT_PROGRESS_SCHEMA_VERSION, quizItems: {}, learningItems: {}, visitedSections: ["vocabulary"], practiceHistory: [], createdAt: timestamp, updatedAt: timestamp };
-}
-
-export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeakingOpen=false }: LessonDisplayProps) {
+export default function LessonDisplay({
+  lesson,
+  lessonId,
+  videoId,
+  initialSpeakingOpen = false,
+}: LessonDisplayProps) {
   const storageLessonId = lessonId ?? lesson.id;
   const [activeTab, setActiveTab] = useState<LessonTab>("vocabulary");
-  const [speakingOpen,setSpeakingOpen]=useState(initialSpeakingOpen);
-  const [speakingEntry,setSpeakingEntry]=useState<{label:string;detail:string}>({label:"Start Speaking Practice",detail:"5–10 minutes · practice from this lesson"});
-  const [reviewedWords, setReviewedWords] = useState<Set<string>>(new Set());
-  const [progress, setProgress] = useState<LessonProgress>(() => emptyProgress(storageLessonId, lesson.createdAt));
+  const [speakingOpen, setSpeakingOpen] = useState(initialSpeakingOpen);
+  const [speakingEntry, setSpeakingEntry] = useState<{ label: string; detail: string }>({
+    label: "Start Speaking Practice",
+    detail: "5–10 minutes · practice from this lesson",
+  });
+  const [progress, setProgress] = useState<LessonProgress>(() =>
+    emptyLessonProgress(storageLessonId, lesson.createdAt),
+  );
   const [progressLoading, setProgressLoading] = useState(true);
   const [progressError, setProgressError] = useState<string | null>(null);
-  const [audioProgress,setAudioProgress]=useState<{ready:number;total:number;failed:number}|null>(null);
+  const [failedCommand, setFailedCommand] = useState<LessonProgressCommand | null>(null);
+  const [audioProgress, setAudioProgress] = useState<{
+    ready: number;
+    total: number;
+    failed: number;
+  } | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const [visitedTabs, setVisitedTabs] = useState<Set<LessonTab>>(
-    new Set<LessonTab>(["vocabulary"]),
-  );
-
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [canExpandSummary, setCanExpandSummary] = useState(false);
   const summaryRef = useRef<HTMLParagraphElement>(null);
@@ -84,97 +95,165 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
 
   useEffect(() => {
     let active = true;
-    storageClient.getLessonProgress(storageLessonId).then((stored) => {
-      if (active) setProgress(stored?.progress ?? emptyProgress(storageLessonId, lesson.createdAt));
-    }).catch((reason) => { if (active) setProgressError(reason instanceof Error ? reason.message : "Không thể tải tiến độ."); }).finally(() => { if (active) setProgressLoading(false); });
-    return () => { active = false; };
+    storageClient
+      .getLessonProgress(storageLessonId)
+      .then((stored) => {
+        if (active) {
+          setProgress(stored?.progress ?? emptyLessonProgress(storageLessonId, lesson.createdAt));
+        }
+      })
+      .catch((reason) => {
+        if (active)
+          setProgressError(reason instanceof Error ? reason.message : "Không thể tải tiến độ.");
+      })
+      .finally(() => {
+        if (active) setProgressLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [lesson.createdAt, storageLessonId]);
 
-  useEffect(()=>{const items=selectLessonAudioPreloadItems(lesson);Promise.resolve().then(()=>setAudioProgress({ready:0,total:items.length,failed:0}));if(document.visibilityState==="visible")audioClient.preload(items,(ready,total,failed)=>setAudioProgress({ready,total,failed}));return()=>audioClient.cancelLesson(lesson.id);},[lesson]);
-  useEffect(()=>{fetch("/api/speaking",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"status",lessonId:storageLessonId})}).then(r=>r.json()).then(data=>{const session=data.session,total=data.tasks?.length??0;if(session?.status==="active")setSpeakingEntry({label:"Continue Speaking Practice",detail:`${session.currentItemIndex+1} of ${total} · about 5–10 minutes`});else if(session?.status==="completed")setSpeakingEntry({label:"Practice Again",detail:`${total} sentences · previous session complete`});else setSpeakingEntry({label:"Start Speaking Practice",detail:`${total||"No"} sentences · about 5–10 minutes`});}).catch(()=>undefined);},[storageLessonId,speakingOpen]);
+  useEffect(() => {
+    const items = selectLessonAudioPreloadItems(lesson);
+    Promise.resolve().then(() => setAudioProgress({ ready: 0, total: items.length, failed: 0 }));
+    if (document.visibilityState === "visible")
+      audioClient.preload(items, (ready, total, failed) =>
+        setAudioProgress({ ready, total, failed }),
+      );
+    return () => audioClient.cancelLesson(lesson.id);
+  }, [lesson]);
+  useEffect(() => {
+    fetch("/api/speaking", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "status", lessonId: storageLessonId }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const session = data.session,
+          total = data.tasks?.length ?? 0;
+        if (session?.status === "active")
+          setSpeakingEntry({
+            label: "Continue Speaking Practice",
+            detail: `${session.currentItemIndex + 1} of ${total} · about 5–10 minutes`,
+          });
+        else if (session?.status === "completed")
+          setSpeakingEntry({
+            label: "Practice Again",
+            detail: `${total} sentences · previous session complete`,
+          });
+        else
+          setSpeakingEntry({
+            label: "Start Speaking Practice",
+            detail: `${total || "No"} sentences · about 5–10 minutes`,
+          });
+      })
+      .catch(() => undefined);
+  }, [storageLessonId, speakingOpen]);
 
-  const handleReviewWord = useCallback((word: string) => {
-    setReviewedWords((prev) => {
-      if (prev.has(word)) {
-        return prev;
+  const persistCommand = useCallback(
+    (command: LessonProgressCommand, optimistic = true) => {
+      if (optimistic) {
+        setProgress((previous) => applyLessonProgressCommand(previous, lesson, command));
       }
-
-      const next = new Set(prev);
-      next.add(word);
-      return next;
-    });
-  }, [setReviewedWords]);
-
-  const handleAnswerQuestion = useCallback((question: Lesson["quiz"][number], selectedAnswer: number) => {
-    setProgress((previous) => {
-      const now = new Date().toISOString();
-      const old = previous.quizItems[question.id];
-      const next: LessonProgress = { ...previous, updatedAt: now, quizItems: { ...previous.quizItems, [question.id]: { itemId: question.id, selectedAnswer, correct: selectedAnswer === question.correctAnswer, attemptCount: (old?.attemptCount ?? 0) + 1, answeredAt: now, completed: true } } };
       setProgressError(null);
-      saveQueue.current = saveQueue.current.catch(() => undefined).then(async () => {
-        try { await storageClient.saveLessonProgress(storageLessonId, next); }
-        catch (reason) { setProgressError(reason instanceof Error ? `Chưa lưu tiến độ: ${reason.message}` : "Chưa lưu tiến độ."); }
+      setFailedCommand(null);
+      saveQueue.current = saveQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            await storageClient.updateLessonProgress(storageLessonId, command);
+          } catch (reason) {
+            setFailedCommand(command);
+            setProgressError(
+              reason instanceof Error
+                ? `Chưa lưu tiến độ: ${reason.message}`
+                : "Chưa lưu được tiến độ.",
+            );
+          }
+        });
+    },
+    [lesson, storageLessonId],
+  );
+
+  const reviewedItemIds = new Set(
+    lesson.vocabulary
+      .filter((item) => progress.learningItems[item.id]?.status === "learned")
+      .map((item) => item.id),
+  );
+
+  const handleReviewWord = useCallback(
+    (itemId: string) => {
+      if (progress.learningItems[itemId]?.status !== "learned") {
+        persistCommand({ type: "mark_learning_item_reviewed", itemId });
+      }
+    },
+    [persistCommand, progress.learningItems],
+  );
+
+  const handleAnswerQuestion = useCallback(
+    (question: Lesson["quiz"][number], selectedAnswer: number) => {
+      persistCommand({
+        type: "record_quiz_answer",
+        itemId: question.id,
+        selectedAnswer,
       });
-      return next;
-    });
-  }, [storageLessonId]);
+    },
+    [persistCommand],
+  );
 
   function selectTab(id: LessonTab) {
     setActiveTab(id);
-    setVisitedTabs((prev) => {
-      if (prev.has(id)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
+    if (!progress.visitedSections.includes(id)) {
+      persistCommand({ type: "mark_section_visited", section: id });
+    }
   }
 
-  function tabProgress(id: LessonTab): { done: number; total: number } {
+  function tabProgress(id: LessonTab): { done: number; total: number; visited: boolean } {
+    const visited = progress.visitedSections.includes(id);
     switch (id) {
       case "vocabulary":
-        return { done: reviewedWords.size, total: lesson.vocabulary.length };
+        return { done: reviewedItemIds.size, total: lesson.vocabulary.length, visited };
       case "quiz":
-        return { done: Object.keys(progress.quizItems).length, total: lesson.quiz.length };
+        return { done: Object.keys(progress.quizItems).length, total: lesson.quiz.length, visited };
       case "idioms":
-        return {
-          done: visitedTabs.has("idioms") ? lesson.idiomsAndSlang.length : 0,
-          total: lesson.idiomsAndSlang.length,
-        };
+        return { done: 0, total: lesson.idiomsAndSlang.length, visited };
       case "grammar":
-        return {
-          done: visitedTabs.has("grammar") ? lesson.exampleSentences.length : 0,
-          total: lesson.exampleSentences.length,
-        };
+        return { done: 0, total: lesson.exampleSentences.length, visited };
       case "practice": {
-        const total =
-          (lesson.deepPractice?.shadowingPractice.lines.length ?? 0) +
-          (lesson.deepPractice?.sentenceMining.length ?? 0) +
-          (lesson.deepPractice?.reviewPlan.length ?? 0) +
-          (lesson.deepPractice?.ankiCards.length ?? 0);
-
-        return {
-          done: visitedTabs.has("practice") ? total : 0,
-          total,
-        };
+        return { done: 0, total: 0, visited };
       }
     }
   }
 
-  const thumbnailUrl = videoId
-    ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
-    : null;
-  const videoUrl = videoId
-    ? `https://www.youtube.com/watch?v=${videoId}`
-    : null;
+  const thumbnailUrl = videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null;
+  const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : null;
 
-  if(speakingOpen)return <SpeakingPractice lessonId={storageLessonId} onExit={()=>setSpeakingOpen(false)}/>;
+  if (speakingOpen)
+    return <SpeakingPractice lessonId={storageLessonId} onExit={() => setSpeakingOpen(false)} />;
   return (
     <div>
       <header className="mb-8">
-        <div className="mb-5 rounded-2xl border-2 border-primary bg-highlight p-4 sm:flex sm:items-center sm:justify-between"><div><p className="font-extrabold text-heading">Guided Speaking Ladder</p><p className="text-sm text-body">{speakingEntry.detail}</p></div><button type="button" onClick={()=>setSpeakingOpen(true)} className="mt-3 rounded-full bg-primary px-5 py-3 font-extrabold text-white sm:mt-0">{speakingEntry.label}</button></div>
-        {audioProgress&&audioProgress.ready<audioProgress.total?<p role="status" className="mb-3 text-xs font-bold text-muted">Đang chuẩn bị âm thanh: {audioProgress.ready}/{audioProgress.total}{audioProgress.failed?` · ${audioProgress.failed} lỗi`:""}</p>:null}
+        <div className="mb-5 rounded-2xl border-2 border-primary bg-highlight p-4 sm:flex sm:items-center sm:justify-between">
+          <div>
+            <p className="font-extrabold text-heading">Guided Speaking Ladder</p>
+            <p className="text-sm text-body">{speakingEntry.detail}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSpeakingOpen(true)}
+            className="mt-3 rounded-full bg-primary px-5 py-3 font-extrabold text-white sm:mt-0"
+          >
+            {speakingEntry.label}
+          </button>
+        </div>
+        {audioProgress && audioProgress.ready < audioProgress.total ? (
+          <p role="status" className="mb-3 text-xs font-bold text-muted">
+            Đang chuẩn bị âm thanh: {audioProgress.ready}/{audioProgress.total}
+            {audioProgress.failed ? ` · ${audioProgress.failed} lỗi` : ""}
+          </p>
+        ) : null}
         <AudioCacheControls />
         <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
           {videoUrl && thumbnailUrl ? (
@@ -193,13 +272,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
               />
               <span className="absolute inset-0 flex items-center justify-center bg-black/15 opacity-0 transition ease-smooth group-hover:opacity-100">
                 <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-sm">
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    aria-hidden="true"
-                  >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <path d="M8 5v14l11-7L8 5z" fill="currentColor" />
                   </svg>
                 </span>
@@ -211,9 +284,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
             <p className="text-[12px] font-bold uppercase tracking-[0.12em] text-muted">
               Bài học của bạn đã sẵn sàng!
             </p>
-            <h2 className="text-3xl font-extrabold leading-tight text-heading">
-              {lesson.title}
-            </h2>
+            <h2 className="text-3xl font-extrabold leading-tight text-heading">{lesson.title}</h2>
 
             <div>
               <p
@@ -242,13 +313,7 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 rounded-full border-2 border-border bg-card px-4 py-2 text-sm font-bold text-primary shadow-sm transition ease-smooth hover:border-primary hover:bg-highlight"
               >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
-                >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M8 5v14l11-7L8 5z" fill="currentColor" />
                 </svg>
                 Xem video gốc
@@ -266,38 +331,43 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
           className="flex gap-2.5 overflow-x-auto px-6 pb-7 pt-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:px-8"
         >
           {TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
-          const { done, total } = tabProgress(tab.id);
-          const isComplete = total > 0 && done >= total;
+            const isActive = activeTab === tab.id;
+            const { done, total, visited } = tabProgress(tab.id);
+            const isComplete = total > 0 && done >= total;
+            const hasItemProgress = tab.id === "vocabulary" || tab.id === "quiz";
 
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => selectTab(tab.id)}
-              className={`flex shrink-0 items-center rounded-full border-2 px-3 py-2.5 text-xs font-extrabold transition ease-smooth sm:px-3.5 sm:py-3 sm:text-sm ${
-                isActive
-                  ? "theme-active-shadow scale-[1.03] border-primary bg-primary text-white"
-                  : "border-border bg-tab-inactive text-body hover:border-primary hover:text-primary"
-              }`}
-            >
-              <span className="mr-2">{tab.emoji}</span>
-              {tab.label}
-              {total > 0 ? (
-                <span
-                  className={`ml-2 inline-flex min-w-[2rem] items-center justify-center rounded-full px-2 py-0.5 text-xs font-bold ${
-                    isActive
-                      ? "bg-white/25 text-white"
-                      : isComplete
-                        ? "bg-correct text-white"
-                        : "bg-card text-primary"
-                  }`}
-                >
-                  {isComplete ? "✓" : `${done}/${total}`}
-                </span>
-              ) : null}
-            </button>
-          );
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => selectTab(tab.id)}
+                className={`flex shrink-0 items-center rounded-full border-2 px-3 py-2.5 text-xs font-extrabold transition ease-smooth sm:px-3.5 sm:py-3 sm:text-sm ${
+                  isActive
+                    ? "theme-active-shadow scale-[1.03] border-primary bg-primary text-white"
+                    : "border-border bg-tab-inactive text-body hover:border-primary hover:text-primary"
+                }`}
+              >
+                <span className="mr-2">{tab.emoji}</span>
+                {tab.label}
+                {hasItemProgress && total > 0 ? (
+                  <span
+                    className={`ml-2 inline-flex min-w-[2rem] items-center justify-center rounded-full px-2 py-0.5 text-xs font-bold ${
+                      isActive
+                        ? "bg-white/25 text-white"
+                        : isComplete
+                          ? "bg-correct text-white"
+                          : "bg-card text-primary"
+                    }`}
+                  >
+                    {isComplete ? "✓" : `${done}/${total}`}
+                  </span>
+                ) : visited ? (
+                  <span className="ml-2 rounded-full bg-card px-2 py-0.5 text-xs font-bold text-primary">
+                    Đã xem
+                  </span>
+                ) : null}
+              </button>
+            );
           })}
         </nav>
 
@@ -338,28 +408,48 @@ export default function LessonDisplay({ lesson, lessonId, videoId, initialSpeaki
       </div>
 
       <div className="min-h-[320px]">
-        {progressLoading ? <p className="mb-4 text-sm font-bold text-muted">Đang tải tiến độ quiz...</p> : null}
-        {progressError ? <div role="alert" className="mb-4 rounded-xl border-2 border-wrong bg-wrong-light p-3 text-sm font-bold text-wrong">{progressError} Tiến độ trên màn hình vẫn được giữ. <button type="button" className="underline" onClick={() => { setProgressError(null); void storageClient.saveLessonProgress(storageLessonId, progress).catch((reason) => setProgressError(reason instanceof Error ? reason.message : "Vẫn chưa lưu được.")); }}>Thử lại</button></div> : null}
+        {progressLoading ? (
+          <p className="mb-4 text-sm font-bold text-muted">Đang tải tiến độ học...</p>
+        ) : null}
+        {progressError ? (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl border-2 border-wrong bg-wrong-light p-3 text-sm font-bold text-wrong"
+          >
+            {progressError} Tiến độ trên màn hình vẫn được giữ.{" "}
+            {failedCommand ? (
+              <button
+                type="button"
+                className="underline"
+                onClick={() => persistCommand(failedCommand, false)}
+              >
+                Thử lại
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {activeTab === "vocabulary" ? (
           <VocabularyCards
             items={lesson.vocabulary}
+            reviewedItemIds={reviewedItemIds}
             onReview={handleReviewWord}
           />
         ) : null}
 
-        {activeTab === "idioms" ? (
-          <IdiomsSection items={lesson.idiomsAndSlang} />
-        ) : null}
+        {activeTab === "idioms" ? <IdiomsSection items={lesson.idiomsAndSlang} /> : null}
 
-        {activeTab === "grammar" ? (
-          <GrammarSection items={lesson.exampleSentences} />
-        ) : null}
+        {activeTab === "grammar" ? <GrammarSection items={lesson.exampleSentences} /> : null}
 
         {activeTab === "practice" ? (
           <DeepPracticeSection
+            key={storageLessonId}
             practice={lesson.deepPractice}
             lessonTitle={lesson.title}
             exampleSentences={lesson.exampleSentences}
+            practiceHistory={progress.practiceHistory}
+            onPracticeComplete={(record) =>
+              persistCommand({ type: "append_practice_history", record })
+            }
           />
         ) : null}
 

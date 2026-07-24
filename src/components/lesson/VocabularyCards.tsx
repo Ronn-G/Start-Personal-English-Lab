@@ -9,59 +9,62 @@ const STAGGER_MS = 150;
 
 interface VocabularyCardsProps {
   items: VocabularyItem[];
-  onReview?: (word: string) => void;
+  reviewedItemIds?: ReadonlySet<string>;
+  onReview?: (itemId: string) => void;
 }
 
 export default function VocabularyCards({
   items,
+  reviewedItemIds,
   onReview,
 }: VocabularyCardsProps) {
-  const [flippedWord, setFlippedWord] = useState<string | null>(null);
+  const [flippedItemId, setFlippedItemId] = useState<string | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleCardClick = useCallback(
-    (word: string) => {
+    (itemId: string) => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
 
-      if (flippedWord === word) {
-        setFlippedWord(null);
+      if (flippedItemId === itemId) {
+        setFlippedItemId(null);
         return;
       }
 
-      onReview?.(word);
+      onReview?.(itemId);
 
-      if (flippedWord !== null) {
-        setFlippedWord(null);
+      if (flippedItemId !== null) {
+        setFlippedItemId(null);
         timeoutRef.current = setTimeout(() => {
-          setFlippedWord(word);
+          setFlippedItemId(itemId);
           timeoutRef.current = null;
         }, STAGGER_MS);
         return;
       }
 
-      setFlippedWord(word);
+      setFlippedItemId(itemId);
     },
-    [flippedWord, onReview],
+    [flippedItemId, onReview],
   );
 
   return (
     <div className="grid gap-6 sm:grid-cols-2">
       {items.map((item) => {
-        const isFlipped = flippedWord === item.word;
+        const isFlipped = flippedItemId === item.id;
+        const isReviewed = reviewedItemIds?.has(item.id) ?? false;
 
         return (
           <div
-            key={item.word}
+            key={item.id}
             role="button"
             tabIndex={0}
-            onClick={() => handleCardClick(item.word)}
+            onClick={() => handleCardClick(item.id)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                handleCardClick(item.word);
+                handleCardClick(item.id);
               }
             }}
             className="flip-scene w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
@@ -70,15 +73,13 @@ export default function VocabularyCards({
             <div className={`flip-inner ${isFlipped ? "is-flipped" : ""}`}>
               <div className="flip-face flex flex-col items-center justify-center rounded-2xl border-2 border-border bg-card p-6 shadow-sm">
                 <span className="shrink-0 text-xs font-bold uppercase tracking-wider text-primary">
-                  Chạm để xem
+                  {isReviewed ? "Đã học" : "Chạm để xem"}
                 </span>
                 <p className="mt-2 line-clamp-3 w-full break-words text-center text-xl font-bold leading-snug text-heading sm:text-2xl">
                   {item.word}
                 </p>
                 {item.phonetic ? (
-                  <p className="mt-1 text-sm font-bold text-muted">
-                    {item.phonetic}
-                  </p>
+                  <p className="mt-1 text-sm font-bold text-muted">{item.phonetic}</p>
                 ) : null}
                 <div className="mt-4">
                   <SpeakButton text={item.word} />
@@ -93,9 +94,7 @@ export default function VocabularyCards({
                         {item.word}
                       </p>
                       {item.phonetic ? (
-                        <p className="mt-1 text-sm font-bold text-muted">
-                          {item.phonetic}
-                        </p>
+                        <p className="mt-1 text-sm font-bold text-muted">{item.phonetic}</p>
                       ) : null}
                     </div>
                     <SpeakButton text={item.word} />
