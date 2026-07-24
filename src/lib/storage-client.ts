@@ -8,6 +8,7 @@ import type {
 } from "@/server/storage/domain";
 import type { LegacyMigrationRecord } from "@/lib/legacy-storage-reader";
 import type { MigrationPreview, MigrationStatus } from "@/server/storage/legacy-migration";
+import type { LessonProgressCommand } from "@/lib/lesson-progress";
 
 const LEGACY_MIGRATION_ID = "localstorage-lessons-v1";
 
@@ -30,9 +31,7 @@ export class StorageApiError extends Error {
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
-    headers: init?.body
-      ? { "Content-Type": "application/json", ...init.headers }
-      : init?.headers,
+    headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as StorageApiErrorBody;
@@ -103,6 +102,20 @@ export const storageClient = {
     return data.progress;
   },
 
+  async updateLessonProgress(
+    id: string,
+    command: LessonProgressCommand,
+  ): Promise<StoredLessonProgress> {
+    const data = await requestJson<{ progress: StoredLessonProgress }>(
+      `${lessonUrl(id)}/progress`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ command }),
+      },
+    );
+    return data.progress;
+  },
+
   async getMigrationStatus(): Promise<MigrationStatus> {
     const data = await requestJson<{ status: MigrationStatus }>("/api/storage/migration");
     return data.status;
@@ -116,7 +129,9 @@ export const storageClient = {
     return data.preview;
   },
 
-  async commitLegacyMigration(records: LegacyMigrationRecord[]): Promise<{ preview: MigrationPreview; status: MigrationStatus }> {
+  async commitLegacyMigration(
+    records: LegacyMigrationRecord[],
+  ): Promise<{ preview: MigrationPreview; status: MigrationStatus }> {
     return requestJson("/api/storage/migration", {
       method: "POST",
       body: JSON.stringify({ action: "commit", migrationId: LEGACY_MIGRATION_ID, records }),

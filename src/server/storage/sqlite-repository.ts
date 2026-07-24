@@ -3,6 +3,11 @@ import type { DatabaseSync } from "node:sqlite";
 
 import type { Lesson } from "../../types/lesson";
 import {
+  applyLessonProgressCommand,
+  normalizeLessonProgress,
+  type LessonProgressCommand,
+} from "../../lib/lesson-progress";
+import {
   LESSON_SCHEMA_VERSION,
   PROGRESS_SCHEMA_VERSION,
   type CreateLessonInput,
@@ -104,8 +109,17 @@ export class SqliteStorageRepository implements StorageRepository {
 
   async listLessons(): Promise<LessonSummary[]> {
     const rows = this.database
-      .prepare("SELECT id, schema_version, title, summary, created_at, updated_at FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC")
-      .all() as Array<{ id: string; schema_version: number; title: string; summary: string; created_at: string; updated_at: string }>;
+      .prepare(
+        "SELECT id, schema_version, title, summary, created_at, updated_at FROM lessons WHERE deleted_at IS NULL ORDER BY updated_at DESC",
+      )
+      .all() as Array<{
+      id: string;
+      schema_version: number;
+      title: string;
+      summary: string;
+      created_at: string;
+      updated_at: string;
+    }>;
     return rows.map((row) => ({
       id: row.id,
       schemaVersion: row.schema_version,
@@ -131,7 +145,11 @@ export class SqliteStorageRepository implements StorageRepository {
 
     const id = input.id ?? input.lesson.id ?? randomUUID();
     assertValidId(id);
-    if (input.lesson.id !== id) throw new StorageError("VALIDATION_ERROR", "Lesson document ID phải khớp database record ID.");
+    if (input.lesson.id !== id)
+      throw new StorageError(
+        "VALIDATION_ERROR",
+        "Lesson document ID phải khớp database record ID.",
+      );
     const now = new Date().toISOString();
     const schemaVersion = input.schemaVersion ?? LESSON_SCHEMA_VERSION;
     if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
@@ -203,9 +221,7 @@ export class SqliteStorageRepository implements StorageRepository {
         schemaVersion,
         lesson.title.trim(),
         lesson.summary.trim(),
-        input.lessonDepth === null
-          ? null
-          : (input.lessonDepth ?? existing.lessonDepth ?? null),
+        input.lessonDepth === null ? null : (input.lessonDepth ?? existing.lessonDepth ?? null),
         JSON.stringify(lesson),
         updatedAt,
         ...sourceParameters(source),
@@ -247,7 +263,8 @@ export class SqliteStorageRepository implements StorageRepository {
   ): Promise<StoredLessonProgress> {
     assertValidId(lessonId);
     assertValidProgress(progress);
-    if (progress.lessonId !== lessonId) throw new StorageError("VALIDATION_ERROR", "Progress lessonId không khớp lesson.");
+    if (progress.lessonId !== lessonId)
+      throw new StorageError("VALIDATION_ERROR", "Progress lessonId không khớp lesson.");
     if (!Number.isInteger(progressVersion) || progressVersion < 1) {
       throw new StorageError("VALIDATION_ERROR", "Progress version không hợp lệ.");
     }
@@ -270,11 +287,70 @@ export class SqliteStorageRepository implements StorageRepository {
     return (await this.getLessonProgress(lessonId)) as StoredLessonProgress;
   }
 
+  async updateLessonProgress(
+    lessonId: string,
+    command: LessonProgressCommand,
+  ): Promise<StoredLessonProgress> {
+    assertValidId(lessonId);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const lessonRow = this.database
+        .prepare("SELECT lesson_json FROM lessons WHERE id = ? AND deleted_at IS NULL")
+        .get(lessonId) as { lesson_json: string } | undefined;
+      if (!lessonRow) {
+        throw new StorageError("NOT_FOUND", "Không tìm thấy lesson.");
+      }
+      const lesson = JSON.parse(lessonRow.lesson_json) as Lesson;
+      assertValidLesson(lesson);
+      const row = this.database
+        .prepare("SELECT * FROM lesson_progress WHERE lesson_id = ?")
+        .get(lessonId) as ProgressRow | undefined;
+      const normalized = row
+        ? normalizeLessonProgress(JSON.parse(row.progress_json), lessonId)
+        : undefined;
+      if (normalized && (!normalized.success || !normalized.data)) {
+        throw new StorageError("VALIDATION_ERROR", "Tiến độ hiện tại không hợp lệ.");
+      }
+      let progress: LessonProgressPayload;
+      try {
+        progress = applyLessonProgressCommand(normalized?.data, lesson, command);
+      } catch (error) {
+        throw new StorageError(
+          "VALIDATION_ERROR",
+          error instanceof Error ? error.message : "Cập nhật tiến độ không hợp lệ.",
+        );
+      }
+      assertValidProgress(progress);
+      const now = new Date().toISOString();
+      this.database
+        .prepare(
+          `INSERT INTO lesson_progress(
+            lesson_id, progress_version, progress_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(lesson_id) DO UPDATE SET
+            progress_version = excluded.progress_version,
+            progress_json = excluded.progress_json,
+            updated_at = excluded.updated_at`,
+        )
+        .run(
+          lessonId,
+          PROGRESS_SCHEMA_VERSION,
+          JSON.stringify(progress),
+          row?.created_at ?? now,
+          now,
+        );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return (await this.getLessonProgress(lessonId)) as StoredLessonProgress;
+  }
+
   async getSetting(key: string): Promise<string | null> {
     if (!key.trim()) throw new StorageError("VALIDATION_ERROR", "Setting key không hợp lệ.");
-    const row = this.database
-      .prepare("SELECT value FROM app_metadata WHERE key = ?")
-      .get(key) as { value: string } | undefined;
+    const row = this.database.prepare("SELECT value FROM app_metadata WHERE key = ?").get(key) as
+      { value: string } | undefined;
     return row?.value ?? null;
   }
 

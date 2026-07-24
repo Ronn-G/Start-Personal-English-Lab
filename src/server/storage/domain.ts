@@ -1,5 +1,9 @@
 import { CURRENT_LESSON_SCHEMA_VERSION, type Lesson } from "../../types/lesson";
-import { CURRENT_PROGRESS_SCHEMA_VERSION, type LessonProgress } from "../../lib/lesson-progress";
+import {
+  CURRENT_PROGRESS_SCHEMA_VERSION,
+  type LessonProgress,
+  type LessonProgressCommand,
+} from "../../lib/lesson-progress";
 
 export const LESSON_SCHEMA_VERSION = CURRENT_LESSON_SCHEMA_VERSION;
 export const PROGRESS_SCHEMA_VERSION = CURRENT_PROGRESS_SCHEMA_VERSION;
@@ -76,6 +80,10 @@ export interface ProgressRepository {
     progress: LessonProgressPayload,
     progressVersion?: number,
   ): Promise<StoredLessonProgress>;
+  updateLessonProgress(
+    lessonId: string,
+    command: LessonProgressCommand,
+  ): Promise<StoredLessonProgress>;
 }
 
 export interface ApplicationSettingsRepository {
@@ -84,6 +92,4 @@ export interface ApplicationSettingsRepository {
 }
 
 export interface StorageRepository
-  extends LessonRepository,
-    ProgressRepository,
-    ApplicationSettingsRepository {}
+  extends LessonRepository, ProgressRepository, ApplicationSettingsRepository {}

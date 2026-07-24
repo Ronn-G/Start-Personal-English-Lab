@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { migrateLegacyProgress, validateLessonProgress } from "../../lib/lesson-progress";
+import { migrateLegacyProgress, normalizeLessonProgress } from "../../lib/lesson-progress";
 import { normalizeLesson } from "../../lib/lesson-schema";
 
 import { StorageError } from "./errors";
@@ -60,21 +60,43 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 2,
     name: "canonical_lesson_and_progress_documents",
     up(database) {
-      const rows = database.prepare("SELECT id, lesson_json, created_at, updated_at FROM lessons").all() as Array<{ id: string; lesson_json: string; created_at: string; updated_at: string }>;
-      const updateLesson = database.prepare("UPDATE lessons SET schema_version = 1, lesson_json = ? WHERE id = ?");
-      const updateProgress = database.prepare("UPDATE lesson_progress SET progress_version = 1, progress_json = ? WHERE lesson_id = ?");
+      const rows = database
+        .prepare("SELECT id, lesson_json, created_at, updated_at FROM lessons")
+        .all() as Array<{
+        id: string;
+        lesson_json: string;
+        created_at: string;
+        updated_at: string;
+      }>;
+      const updateLesson = database.prepare(
+        "UPDATE lessons SET schema_version = 1, lesson_json = ? WHERE id = ?",
+      );
+      const updateProgress = database.prepare(
+        "UPDATE lesson_progress SET progress_version = 1, progress_json = ? WHERE lesson_id = ?",
+      );
       for (const row of rows) {
-        const normalized = normalizeLesson(JSON.parse(row.lesson_json), { id: row.id, createdAt: row.created_at, updatedAt: row.updated_at });
-        if (!normalized.success || !normalized.data) throw new Error(`Không thể migrate lesson ${row.id}: ${normalized.diagnostics.map((d) => d.message).join("; ")}`);
+        const normalized = normalizeLesson(JSON.parse(row.lesson_json), {
+          id: row.id,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        });
+        if (!normalized.success || !normalized.data)
+          throw new Error(
+            `Không thể migrate lesson ${row.id}: ${normalized.diagnostics.map((d) => d.message).join("; ")}`,
+          );
         updateLesson.run(JSON.stringify(normalized.data), row.id);
-        const progressRow = database.prepare("SELECT progress_json FROM lesson_progress WHERE lesson_id = ?").get(row.id) as { progress_json: string } | undefined;
+        const progressRow = database
+          .prepare("SELECT progress_json FROM lesson_progress WHERE lesson_id = ?")
+          .get(row.id) as { progress_json: string } | undefined;
         if (!progressRow) continue;
         const rawProgress = JSON.parse(progressRow.progress_json) as unknown;
-        const canonical = validateLessonProgress(rawProgress);
-        if (canonical.success && canonical.data) updateProgress.run(JSON.stringify(canonical.data), row.id);
+        const canonical = normalizeLessonProgress(rawProgress, row.id);
+        if (canonical.success && canonical.data)
+          updateProgress.run(JSON.stringify(canonical.data), row.id);
         else {
           const migrated = migrateLegacyProgress(rawProgress, normalized.data, row.created_at);
-          if (!migrated.success || !migrated.data) throw new Error(`Không thể migrate progress ${row.id}.`);
+          if (!migrated.success || !migrated.data)
+            throw new Error(`Không thể migrate progress ${row.id}.`);
           updateProgress.run(JSON.stringify(migrated.data), row.id);
         }
       }
@@ -142,7 +164,8 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     version: 6,
     name: "guided_speaking_ladder",
-    up(database) { database.exec(`
+    up(database) {
+      database.exec(`
       CREATE TABLE speaking_progress (
         lesson_id TEXT NOT NULL, practice_item_id TEXT NOT NULL, source_type TEXT NOT NULL, source_item_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('new','practicing','recalled_with_help','recalled','personalized')),
@@ -161,36 +184,46 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
       CREATE UNIQUE INDEX speaking_one_active_session ON speaking_sessions(lesson_id) WHERE status='active';
       CREATE INDEX speaking_session_active_idx ON speaking_sessions(lesson_id,status,updated_at);
-    `); },
+    `);
+    },
   },
   {
     version: 7,
     name: "guided_speaking_ladder_compatibility",
     up(database) {
       const progressColumns = new Set(
-        (database.prepare("PRAGMA table_info(speaking_progress)").all() as Array<{ name: string }>).map((column) => column.name),
+        (
+          database.prepare("PRAGMA table_info(speaking_progress)").all() as Array<{ name: string }>
+        ).map((column) => column.name),
       );
       const sessionColumns = new Set(
-        (database.prepare("PRAGMA table_info(speaking_sessions)").all() as Array<{ name: string }>).map((column) => column.name),
+        (
+          database.prepare("PRAGMA table_info(speaking_sessions)").all() as Array<{ name: string }>
+        ).map((column) => column.name),
       );
       if (!progressColumns.has("source_item_id")) {
         database.exec("ALTER TABLE speaking_progress ADD COLUMN source_item_id TEXT");
       }
       if (!sessionColumns.has("drafts_json")) {
-        database.exec("ALTER TABLE speaking_sessions ADD COLUMN drafts_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(drafts_json))");
+        database.exec(
+          "ALTER TABLE speaking_sessions ADD COLUMN drafts_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(drafts_json))",
+        );
       }
       if (!sessionColumns.has("checks_json")) {
-        database.exec("ALTER TABLE speaking_sessions ADD COLUMN checks_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checks_json))");
+        database.exec(
+          "ALTER TABLE speaking_sessions ADD COLUMN checks_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checks_json))",
+        );
       }
-      database.exec("UPDATE speaking_progress SET source_item_id = practice_item_id WHERE source_item_id IS NULL OR source_item_id = ''");
+      database.exec(
+        "UPDATE speaking_progress SET source_item_id = practice_item_id WHERE source_item_id IS NULL OR source_item_id = ''",
+      );
     },
   },
 ];
 
 function readUserVersion(database: DatabaseSync): number {
   const row = database.prepare("PRAGMA user_version").get() as
-    | { user_version?: number }
-    | undefined;
+    { user_version?: number } | undefined;
   return Number(row?.user_version ?? 0);
 }
 

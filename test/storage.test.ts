@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 import {
+  PRACTICE_HISTORY_LIMIT,
+  applyLessonProgressCommand,
   migrateLegacyProgress,
+  normalizeLessonProgress,
   validateLessonProgress,
   type LessonProgress,
 } from "../src/lib/lesson-progress";
@@ -36,6 +39,7 @@ import {
 import type { Lesson } from "../src/types/lesson";
 import {
   BACKUP_FORMAT,
+  checksum,
   exportBackup,
   importBackup,
   mergeProgress,
@@ -154,6 +158,25 @@ function progress(item: Lesson, lessonId = item.id): LessonProgress {
   };
 }
 
+function practiceRecord(item: Lesson, id = uuid(3, 1), occurredAt = item.updatedAt) {
+  return {
+    id,
+    itemId: item.exampleSentences[0].id,
+    mode: "writing" as const,
+    prompt: item.exampleSentences[0].sentence,
+    userAnswer: "This is my complete practice answer.",
+    feedback: {
+      score: 8,
+      overall: "Clear and natural.",
+      strengths: ["Good structure"],
+      corrections: ["Use a more specific verb"],
+      improvedVersion: "This is my improved practice answer.",
+      nextStep: "Say it once more.",
+    },
+    occurredAt,
+  };
+}
+
 test("canonical Lesson validation and legacy normalization assign stable IDs", () => {
   const normalized = normalizeLesson(legacyLesson(), {
     id: uuid(9),
@@ -209,6 +232,84 @@ test("legacy quiz indexes migrate to IDs, deduplicate, and warn out of range", (
 test("canonical Progress rejects index-based shape", () => {
   assert.equal(validateLessonProgress({ answeredQuestions: [0] }).success, false);
 });
+test("legacy canonical progress defaults optional activity collections", () => {
+  const item = lesson();
+  const result = normalizeLessonProgress({
+    lessonId: item.id,
+    progressVersion: 1,
+    quizItems: {},
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  });
+  assert.equal(result.success, true);
+  assert.deepEqual(result.data?.learningItems, {});
+  assert.deepEqual(result.data?.visitedSections, []);
+  assert.deepEqual(result.data?.practiceHistory, []);
+});
+test("progress commands use stable IDs, preserve updates and reject foreign content", () => {
+  const item = lesson();
+  const vocabularyId = item.vocabulary[0].id;
+  let state = applyLessonProgressCommand(progress(item), item, {
+    type: "mark_learning_item_reviewed",
+    itemId: vocabularyId,
+  });
+  state = applyLessonProgressCommand(state, item, {
+    type: "mark_section_visited",
+    section: "grammar",
+  });
+  state = applyLessonProgressCommand(state, item, {
+    type: "record_quiz_answer",
+    itemId: item.quiz[0].id,
+    selectedAnswer: item.quiz[0].correctAnswer,
+  });
+  state = applyLessonProgressCommand(state, item, {
+    type: "append_practice_history",
+    record: practiceRecord(item),
+  });
+  assert.equal(state.learningItems[vocabularyId].status, "learned");
+  assert.deepEqual(state.visitedSections, ["grammar"]);
+  assert.equal(state.quizItems[item.quiz[0].id].completed, true);
+  assert.equal(state.practiceHistory.length, 1);
+  assert.throws(() =>
+    applyLessonProgressCommand(state, item, {
+      type: "mark_learning_item_reviewed",
+      itemId: uuid(99),
+    }),
+  );
+  assert.throws(() =>
+    applyLessonProgressCommand(state, item, {
+      type: "mark_section_visited",
+      section: "unknown" as never,
+    }),
+  );
+  assert.throws(() =>
+    applyLessonProgressCommand(state, item, {
+      type: "append_practice_history",
+      record: { ...practiceRecord(item), id: "not-a-uuid" },
+    }),
+  );
+});
+test("practice history deduplicates and remains capped at the newest records", () => {
+  const item = lesson();
+  let state = progress(item);
+  for (let index = 0; index < PRACTICE_HISTORY_LIMIT + 5; index++) {
+    state = applyLessonProgressCommand(state, item, {
+      type: "append_practice_history",
+      record: practiceRecord(
+        item,
+        uuid(3, index + 1),
+        new Date(Date.parse(item.updatedAt) + index * 1_000).toISOString(),
+      ),
+    });
+  }
+  assert.equal(state.practiceHistory.length, PRACTICE_HISTORY_LIMIT);
+  const duplicate = state.practiceHistory[0];
+  state = applyLessonProgressCommand(state, item, {
+    type: "append_practice_history",
+    record: duplicate,
+  });
+  assert.equal(state.practiceHistory.filter((entry) => entry.id === duplicate.id).length, 1);
+});
 test("database migrates 1 through 4 without losing legacy content and rejects newer versions", () => {
   const db = new DatabaseSync(":memory:");
   runMigrations(db, [MIGRATIONS[0]]);
@@ -259,6 +360,42 @@ test("new database v3 repository lists summaries and preserves canonical IDs and
   const saved = await repo.saveLessonProgress(source.id, progress(source));
   assert.deepEqual((await repo.getLesson(source.id))?.lesson, source);
   assert.deepEqual(await repo.getLessonProgress(source.id), saved);
+  opened.database.close();
+});
+test("transactional progress commands survive sequential cross-feature updates and reload", async () => {
+  const opened = openStorageDatabase(join(temp(), "commands.sqlite3"));
+  const repo = new SqliteStorageRepository(opened.database);
+  const item = lesson();
+  await repo.createLesson({ id: item.id, lesson: item });
+  await repo.updateLessonProgress(item.id, {
+    type: "mark_learning_item_reviewed",
+    itemId: item.vocabulary[0].id,
+  });
+  await repo.updateLessonProgress(item.id, {
+    type: "mark_section_visited",
+    section: "practice",
+  });
+  await repo.updateLessonProgress(item.id, {
+    type: "record_quiz_answer",
+    itemId: item.quiz[0].id,
+    selectedAnswer: item.quiz[0].correctAnswer,
+  });
+  await repo.updateLessonProgress(item.id, {
+    type: "append_practice_history",
+    record: practiceRecord(item),
+  });
+  const reloaded = await repo.getLessonProgress(item.id);
+  assert.equal(reloaded?.progress.learningItems[item.vocabulary[0].id].status, "learned");
+  assert.deepEqual(reloaded?.progress.visitedSections, ["practice"]);
+  assert.equal(reloaded?.progress.quizItems[item.quiz[0].id].attemptCount, 1);
+  assert.equal(reloaded?.progress.practiceHistory.length, 1);
+  await assert.rejects(() =>
+    repo.updateLessonProgress(item.id, {
+      type: "mark_learning_item_reviewed",
+      itemId: uuid(77),
+    }),
+  );
+  assert.equal((await repo.getLessonProgress(item.id))?.progress.practiceHistory.length, 1);
   opened.database.close();
 });
 test("failed migration rolls back", () => {
@@ -449,6 +586,7 @@ test("backup export validates checksum and excludes deleted lessons and secrets"
   await repo.setSetting("GEMINI_API_KEY", "secret");
   const backup = exportBackup(db, "0.1.0");
   assert.equal(validateBackup(backup).diagnostics.length, 0);
+  assert.equal(validateBackup(JSON.parse(JSON.stringify(backup)) as unknown).diagnostics.length, 0);
   assert.equal(JSON.stringify(backup).includes("secret"), false);
   assert.equal(backup.lessons.length, 1);
   const damaged = structuredClone(backup);
@@ -543,7 +681,14 @@ test("backup merge progress never loses attempts or completion", () => {
     answeredAt: "2026-01-01T00:00:00.000Z",
     completed: true,
   };
-  const newer = {
+  older.learningItems[item.vocabulary[0].id] = {
+    itemId: item.vocabulary[0].id,
+    status: "learned",
+    updatedAt: older.updatedAt,
+    userSelected: true,
+  };
+  older.practiceHistory = [practiceRecord(item)];
+  const newer: LessonProgress = {
     ...progress(item),
     updatedAt: "2026-02-01T00:00:00.000Z",
     quizItems: {
@@ -560,6 +705,31 @@ test("backup merge progress never loses attempts or completion", () => {
   const merged = mergeProgress(older, newer);
   assert.equal(merged.quizItems[id].attemptCount, 4);
   assert.equal(merged.quizItems[id].completed, true);
+  assert.equal(merged.learningItems[item.vocabulary[0].id].status, "learned");
+  assert.equal(merged.practiceHistory.length, 1);
+});
+test("backup v1 accepts legacy progress without learning activity fields", async () => {
+  const database = new DatabaseSync(":memory:");
+  runMigrations(database);
+  const item = lesson();
+  const repo = new SqliteStorageRepository(database);
+  await repo.createLesson({ id: item.id, lesson: item });
+  await repo.saveLessonProgress(item.id, progress(item));
+  const backup = exportBackup(database, "0.1.0");
+  const legacy = structuredClone(backup) as unknown as {
+    progress: Array<Record<string, unknown>>;
+    integrity: { algorithm: "SHA-256"; checksum: string };
+  } & Record<string, unknown>;
+  delete legacy.progress[0].learningItems;
+  delete legacy.progress[0].visitedSections;
+  delete legacy.progress[0].practiceHistory;
+  const payload = structuredClone(legacy);
+  delete (payload as Record<string, unknown>).integrity;
+  legacy.integrity.checksum = checksum(payload as never);
+  const checked = validateBackup(legacy);
+  assert.equal(checked.diagnostics.length, 0);
+  assert.deepEqual(checked.document?.progress[0].learningItems, {});
+  database.close();
 });
 
 test("audio cache key is stable, normalizes whitespace and changes with config", () => {

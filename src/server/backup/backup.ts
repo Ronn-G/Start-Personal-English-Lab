@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { validateCanonicalLesson } from "../../lib/lesson-schema";
-import { validateLessonProgress, type LessonProgress } from "../../lib/lesson-progress";
+import {
+  PRACTICE_HISTORY_LIMIT,
+  normalizeLessonProgress,
+  type LearningItemProgress,
+  type LessonProgress,
+} from "../../lib/lesson-progress";
 import type { Lesson } from "../../types/lesson";
 import { CURRENT_LESSON_SCHEMA_VERSION } from "../../types/lesson";
 import { CURRENT_DATABASE_VERSION } from "../storage/migrations";
@@ -205,25 +210,29 @@ export function validateBackup(value: unknown): {
     });
   if (Array.isArray(value.progress))
     value.progress.forEach((progress, i) => {
-      const result = validateLessonProgress(progress);
+      const lessonId =
+        record(progress) && typeof progress.lessonId === "string" ? progress.lessonId : undefined;
+      const result = normalizeLessonProgress(progress, lessonId);
       if (!result.success)
         d.push({
           code: "INVALID_PROGRESS",
           path: `$.progress[${i}]`,
           message: result.diagnostics.map((x) => x.message).join("; "),
         });
-      else if (!ids.has((progress as LessonProgress).lessonId))
+      else if (!ids.has(result.data!.lessonId))
         d.push({
           code: "ORPHAN_PROGRESS",
           path: `$.progress[${i}].lessonId`,
           message: "Tiến độ không có bài học tương ứng.",
         });
       else {
-        const data = progress as LessonProgress,
+        const data = result.data!,
           allowed = itemIds.get(data.lessonId)!;
-        const bad = [...Object.keys(data.quizItems), ...Object.keys(data.learningItems)].find(
-          (id) => !allowed.has(id),
-        );
+        const bad = [
+          ...Object.keys(data.quizItems),
+          ...Object.keys(data.learningItems),
+          ...data.practiceHistory.map((item) => item.itemId),
+        ].find((id) => !allowed.has(id));
         if (bad)
           d.push({
             code: "ITEM_ID_MISMATCH",
@@ -244,7 +253,16 @@ export function validateBackup(value: unknown): {
       path: "$.integrity.checksum",
       message: "Checksum không khớp; file có thể đã hỏng hoặc bị sửa.",
     });
-  return d.length ? { diagnostics: d } : { document, diagnostics: [] };
+  if (d.length) return { diagnostics: d };
+  return {
+    document: {
+      ...document,
+      progress: document.progress.map(
+        (progress) => normalizeLessonProgress(progress, progress.lessonId).data!,
+      ),
+    },
+    diagnostics: [],
+  };
 }
 
 export function exportBackup(
@@ -430,14 +448,45 @@ export function mergeProgress(a: LessonProgress | undefined, b: LessonProgress):
         completed: x.completed || y.completed,
       };
   }
+  const learningRank: Record<LearningItemProgress["status"], number> = {
+    new: 0,
+    learning: 1,
+    learned: 2,
+  };
+  const learningItems = { ...older.learningItems, ...newer.learningItems };
+  for (const id of new Set([...Object.keys(a.learningItems), ...Object.keys(b.learningItems)])) {
+    const left = a.learningItems[id];
+    const right = b.learningItems[id];
+    if (left && right) {
+      learningItems[id] =
+        learningRank[left.status] > learningRank[right.status]
+          ? left
+          : learningRank[right.status] > learningRank[left.status]
+            ? right
+            : Date.parse(left.updatedAt) >= Date.parse(right.updatedAt)
+              ? left
+              : right;
+    }
+  }
+  const historyById = new Map(a.practiceHistory.map((item) => [item.id, item]));
+  for (const item of b.practiceHistory) {
+    const old = historyById.get(item.id);
+    if (!old || Date.parse(item.occurredAt) >= Date.parse(old.occurredAt)) {
+      historyById.set(item.id, item);
+    }
+  }
   return {
     ...newer,
     quizItems,
-    learningItems: { ...older.learningItems, ...newer.learningItems },
+    learningItems,
     visitedSections: [...new Set([...a.visitedSections, ...b.visitedSections])],
-    practiceHistory: [
-      ...new Map([...a.practiceHistory, ...b.practiceHistory].map((x) => [x.id, x])).values(),
-    ],
+    practiceHistory: [...historyById.values()]
+      .sort(
+        (left, right) =>
+          Date.parse(right.occurredAt) - Date.parse(left.occurredAt) ||
+          left.id.localeCompare(right.id),
+      )
+      .slice(0, PRACTICE_HISTORY_LIMIT),
     createdAt: Date.parse(a.createdAt) < Date.parse(b.createdAt) ? a.createdAt : b.createdAt,
   };
 }
@@ -672,7 +721,7 @@ export function importBackup(
       const row = database
         .prepare("SELECT progress_json FROM lesson_progress WHERE lesson_id=?")
         .get(id) as { progress_json: string } | undefined;
-      const checked = row ? validateLessonProgress(JSON.parse(row.progress_json)) : undefined;
+      const checked = row ? normalizeLessonProgress(JSON.parse(row.progress_json), id) : undefined;
       if (!checked?.success || checked.data?.lessonId !== id)
         throw new Error(`Verify progress tháº¥t báº¡i: ${source.lessonId}`);
     }
