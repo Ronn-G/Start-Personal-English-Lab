@@ -302,6 +302,19 @@ Kiểm tra score là number; `overall`, `improvedVersion`, `nextStep` truthy; st
 - Anki hiện chỉ là `AnkiCard[]` trong Lesson và danh sách render ở `DeepPracticeSection`; không có nút/file exporter (CSV/TSV/APKG), importer hay download.
 - `videoId` có trong response/storage/render, nhưng hai producer hiện tại chỉ trả `{ lesson }`; không có logic trích video ID từ transcript, nên thumbnail/link thường không xuất hiện cho bài mới.
 
+### Sprint 8 update — persisted learning progress
+
+Phần mô tả progress in-memory ở trên là trạng thái lịch sử trước Sprint 8. Hiện tại
+`LessonDisplay` tải Progress v1 theo lesson ID và reset state khi đổi lesson. Vocabulary review dùng
+vocabulary UUID trong `learningItems`; quiz dùng quiz UUID; tab visit dùng stable section key.
+Idioms/grammar/practice chỉ hiển thị “Đã xem” khi mở tab, không giả định hoàn thành toàn bộ nội dung.
+
+`PATCH /api/storage/lessons/[id]/progress` nhận command cho vocabulary, section, quiz hoặc Active
+Practice. SQLite repository khóa transaction, đọc progress mới nhất, validate command với lesson,
+merge một thay đổi rồi ghi lại. Active Practice lưu writing/speaking answer và typed feedback sau
+request thành công; UI hiển thị năm record gần nhất trong tối đa 20 record persisted. Reload, đóng/mở
+app và đổi lesson đều phục hồi từ SQLite. Speaking Ladder và Kokoro không thay đổi.
+
 ## 9. Điểm phải giữ tương thích
 
 1. Không đổi/xóa key `personal-english-lab-saved-lessons` hoặc progress keys mà không có đọc legacy và migration tiến.

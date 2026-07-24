@@ -55,6 +55,12 @@ không khả dụng, client dùng Web Speech API. Health check của Kokoro ở 
 Speaking Ladder hiện tại là Read → Recall → Keywords → Personalize → Free Speak. Việc đổi ladder
 hoặc thêm Shadow không thuộc baseline này.
 
+Tiến độ học được lưu trong SQLite theo stable item UUID. Lật thẻ từ vựng đánh dấu item là `learned`;
+mở tab chỉ ghi `visited` và UI hiển thị “Đã xem”, không xem đó là hoàn thành. Quiz, vocabulary,
+section visit và Active Practice dùng các command cập nhật transaction phía server để tránh ghi đè
+lẫn nhau. Active Practice chỉ lưu câu trả lời sau khi nhận feedback thành công và giữ tối đa 20 bản
+ghi gần nhất mỗi lesson. Các trạng thái này được phục hồi khi reload hoặc quay lại lesson.
+
 ## Verification
 
 ```powershell
@@ -69,6 +75,8 @@ npm run build
 ```
 
 Portable packaging được hoãn tới final release sprint sau khi app hoàn thiện chức năng.
+
+Portable packaging remains deferred until the final release sprint.
 
 ## Tài liệu
 

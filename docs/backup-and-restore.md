@@ -24,3 +24,15 @@ Backup v1 now has optional `speakingProgress` and `speakingSessions` collections
 # Personal sentence data
 
 Speaking sessions may contain optional per-item `drafts` and validated `checks`. Their keys are remapped with stable speaking item identities during import; old backups without these fields remain valid. Raw prompts, provider responses, secrets, and audio are never exported.
+
+# Sprint 8 lesson progress compatibility
+
+Backup vẫn là version 1. Backup cũ thiếu `learningItems`, `visitedSections` hoặc `practiceHistory`
+được normalize thành collection rỗng sau khi checksum gốc được xác minh. Backup mới tự động chứa
+các field này trong Progress v1.
+
+Merge dùng union section key; learning status dùng rank `new < learning < learned` nên không giảm;
+quiz giữ attempt lớn nhất và không hạ completion. Practice history union/deduplicate theo record UUID,
+chọn bản mới hơn khi trùng ID, sắp xếp ổn định theo thời gian và áp giới hạn 20 sau merge. Replace
+vẫn thay dữ liệu trong transaction và rollback toàn bộ khi lỗi. Speaking progress/session và audio
+cache giữ nguyên semantics.

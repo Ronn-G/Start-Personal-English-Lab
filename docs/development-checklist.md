@@ -26,6 +26,10 @@ npm run smoke:speaking
 npm run build
 ```
 
+Khi sửa lesson progress, phải test tối thiểu: stable item ID, reload, cô lập giữa lessons, command
+tuần tự không lost update, legacy progress defaults, backup Merge/Replace và history cap. Tab visited
+không được gắn nhãn hoàn thành. Feedback request lỗi không được tạo practice history.
+
 Để kiểm tra audio development, cấu hình Kokoro một lần trong `.env.local`, chạy
 `npm run dev:full`, rồi xác nhận `/health`, port 5050, Kokoro playback, browser fallback và khả
 năng quay lại Kokoro sau khi server khởi động lại. Không commit `.env.local` hoặc `.logs`.
@@ -35,3 +39,5 @@ Trước commit chạy `git diff --check`, `git diff --stat`, `git status --shor
 
 Không build portable trong các sprint phát triển hiện tại. Portable chỉ được build trong final
 release sprint khi ứng dụng đã hoàn thiện.
+
+Portable packaging remains deferred until the final release sprint.

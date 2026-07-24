@@ -21,6 +21,13 @@ Backup dùng SHA-256, hỗ trợ merge/replace, gồm speaking progress và acti
 cache hoặc secret. Speaking Ladder hiện là Read → Recall → Keywords → Personalize → Free Speak.
 Không tự thêm Shadow hoặc đổi thứ tự.
 
+Sprint 8 tái sử dụng Progress v1: `learningItems` lưu vocabulary review theo UUID,
+`visitedSections` lưu stable section key, và `practiceHistory` lưu Active Practice writing/speaking.
+Client gửi command nhỏ qua `PATCH /api/storage/lessons/[id]/progress`; repository read-modify-write
+trong `BEGIN IMMEDIATE`, nên quiz và các learning activity không ghi đè nhau. History chỉ được tạo
+sau feedback thành công, có feedback typed đầy đủ và bị giới hạn ở 20 record mới nhất. Không có
+SQLite migration mới; database schema vẫn là 7 và backup vẫn là v1 backward-compatible.
+
 Audio ưu tiên Kokoro local, có disk cache và fallback Web Speech ở client. Smoke tests không cần
 Kokoro model thật.
 
@@ -44,6 +51,8 @@ npm run build
 
 Không commit `.env`, `.data`, SQLite, audio cache, logs, backup cá nhân, model hoặc ZIP. Portable
 packaging được hoãn tới final release sprint sau khi app hoàn thiện chức năng.
+
+Portable packaging remains deferred until the final release sprint.
 
 Xem `docs/development-checklist.md`, `docs/versioning-and-release.md` và các tài liệu kiến trúc
 trong `docs/` trước khi thay đổi.

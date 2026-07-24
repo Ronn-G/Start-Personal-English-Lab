@@ -42,3 +42,18 @@ Schema v6 adds `speaking_progress`, keyed by `(lesson_id, practice_item_id)`. It
 # Personal sentence state
 
 Schema v6 uses `speaking_sessions.drafts_json` for optional user-written drafts and `checks_json` for validated sentence-check results plus input hash/time. Both are session/item scoped and never modify lesson JSON.
+
+# Sprint 8 learning activity in Progress v1
+
+Không tăng SQLite hoặc Progress schema version. Các field JSON vốn có được hoàn thiện:
+
+- `learningItems[itemId]`: vocabulary UUID, trạng thái `learned`, `userSelected: true` và `updatedAt`
+  khi người dùng chủ động lật thẻ.
+- `visitedSections`: union các key cố định `vocabulary | idioms | grammar | practice | quiz`; đây là
+  “đã xem”, không phải mastery/completion.
+- `practiceHistory`: record UUID gồm example-sentence UUID, mode writing/speaking, prompt, user
+  answer, typed feedback và timestamp. Tối đa 20 record mới nhất mỗi lesson.
+
+Parser progress mặc định ba collection trên thành `{}`, `[]`, `[]` khi document v1 cũ thiếu field.
+Command validation kiểm tra item thuộc lesson, enum, timestamp, UUID, feedback shape và giới hạn
+string. SQLite repository áp dụng command bằng read-modify-write transaction.
