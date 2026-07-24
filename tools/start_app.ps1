@@ -1,20 +1,18 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$KokoroPython = $env:KOKORO_PYTHON_PATH
-$KokoroToolDir = $env:KOKORO_TOOL_DIR
-$KokoroServer = Join-Path $ProjectRoot "tools\kokoro_server.py"
-$KokoroModel = $env:KOKORO_MODEL_PATH
-$KokoroVoices = $env:KOKORO_VOICES_PATH
+$LogRoot = Join-Path $ProjectRoot ".logs"
+$LauncherLog = Join-Path $LogRoot "launcher.log"
+$KokoroStdout = Join-Path $LogRoot "kokoro-app.stdout.log"
+$KokoroStderr = Join-Path $LogRoot "kokoro-app.stderr.log"
+$NextStdout = Join-Path $LogRoot "next-app.stdout.log"
+$NextStderr = Join-Path $LogRoot "next-app.stderr.log"
 $NodeAppUrl = "http://localhost:3000"
-$KokoroHealthUrl = "http://127.0.0.1:5050/health"
+
+. (Join-Path $PSScriptRoot "kokoro_config.ps1")
 
 function Test-Url {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Url
-    )
-
+    param([Parameter(Mandatory = $true)][string] $Url)
     try {
         Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 | Out-Null
         return $true
@@ -24,69 +22,67 @@ function Test-Url {
     }
 }
 
-function Start-KokoroServer {
-    if (Test-Url -Url $KokoroHealthUrl) {
-        return
+function Wait-Until {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock] $Condition,
+        [Parameter(Mandatory = $true)][int] $TimeoutSeconds
+    )
+    for ($attempt = 0; $attempt -lt $TimeoutSeconds; $attempt++) {
+        if (& $Condition) { return $true }
+        Start-Sleep -Seconds 1
     }
-
-    if ([string]::IsNullOrWhiteSpace($KokoroPython) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
-        $script:KokoroPython = Join-Path $KokoroToolDir ".venv\Scripts\python.exe"
-    }
-    if ([string]::IsNullOrWhiteSpace($KokoroModel) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
-        $script:KokoroModel = Join-Path $KokoroToolDir "models\kokoro-v1.0.onnx"
-    }
-    if ([string]::IsNullOrWhiteSpace($KokoroVoices) -and -not [string]::IsNullOrWhiteSpace($KokoroToolDir)) {
-        $script:KokoroVoices = Join-Path $KokoroToolDir "models\voices-v1.0.bin"
-    }
-
-    if ([string]::IsNullOrWhiteSpace($KokoroPython)) {
-        throw "Kokoro Python is not configured. Set KOKORO_PYTHON_PATH or KOKORO_TOOL_DIR."
-    }
-    if (-not (Test-Path -LiteralPath $KokoroPython)) {
-        throw "Khong tim thay Python Kokoro: $KokoroPython"
-    }
-
-    if (-not (Test-Path -LiteralPath $KokoroServer)) {
-        throw "Khong tim thay Kokoro server: $KokoroServer"
-    }
-    if ([string]::IsNullOrWhiteSpace($KokoroModel) -or -not (Test-Path -LiteralPath $KokoroModel)) {
-        throw "Kokoro model was not found: $KokoroModel"
-    }
-    if ([string]::IsNullOrWhiteSpace($KokoroVoices) -or -not (Test-Path -LiteralPath $KokoroVoices)) {
-        throw "Kokoro voices file was not found: $KokoroVoices"
-    }
-
-    Start-Process `
-        -FilePath $KokoroPython `
-        -ArgumentList @("`"$KokoroServer`"", "--model", "`"$KokoroModel`"", "--voices", "`"$KokoroVoices`"") `
-        -WorkingDirectory $ProjectRoot `
-        -WindowStyle Hidden
+    return $false
 }
 
-function Start-NextApp {
-    if (Test-Url -Url $NodeAppUrl) {
-        return
+New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
+
+try {
+    "[$(Get-Date -Format s)] Starting Personal English Lab." | Set-Content -LiteralPath $LauncherLog
+    $config = Resolve-KokoroConfig -ProjectRoot $ProjectRoot
+    Assert-KokoroConfig -Config $config
+
+    if (-not (Test-KokoroHealth -BaseUrl $config.BaseUrl)) {
+        $arguments = @(
+            "`"$($config.Server)`"",
+            "--host", $config.Host,
+            "--port", $config.Port,
+            "--model", "`"$($config.Model)`"",
+            "--voices", "`"$($config.Voices)`""
+        )
+        Start-Process `
+            -FilePath $config.Python `
+            -ArgumentList $arguments `
+            -WorkingDirectory $ProjectRoot `
+            -RedirectStandardOutput $KokoroStdout `
+            -RedirectStandardError $KokoroStderr `
+            -WindowStyle Hidden | Out-Null
+
+        if (-not (Wait-Until -TimeoutSeconds 90 -Condition { Test-KokoroHealth -BaseUrl $config.BaseUrl })) {
+            throw "Kokoro did not become ready. See $KokoroStderr"
+        }
     }
 
-    Start-Process `
-        -FilePath "npm.cmd" `
-        -ArgumentList @("run", "dev") `
-        -WorkingDirectory $ProjectRoot `
-        -WindowStyle Hidden
-}
+    if (-not (Test-Url -Url $NodeAppUrl)) {
+        Start-Process `
+            -FilePath "npm.cmd" `
+            -ArgumentList @("run", "dev") `
+            -WorkingDirectory $ProjectRoot `
+            -RedirectStandardOutput $NextStdout `
+            -RedirectStandardError $NextStderr `
+            -WindowStyle Hidden | Out-Null
 
-Start-KokoroServer
-Start-Sleep -Seconds 2
-
-Start-NextApp
-
-for ($i = 0; $i -lt 20; $i++) {
-    if (Test-Url -Url $NodeAppUrl) {
-        Start-Process $NodeAppUrl
-        exit 0
+        if (-not (Wait-Until -TimeoutSeconds 60 -Condition { Test-Url -Url $NodeAppUrl })) {
+            throw "Next.js did not become ready. See $NextStderr"
+        }
     }
 
-    Start-Sleep -Seconds 1
+    "[$(Get-Date -Format s)] App ready at $NodeAppUrl" | Add-Content -LiteralPath $LauncherLog
+    Start-Process $NodeAppUrl
+    exit 0
 }
-
-Start-Process $NodeAppUrl
+catch {
+    $message = "[$(Get-Date -Format s)] $($_.Exception.Message)"
+    $message | Add-Content -LiteralPath $LauncherLog
+    Write-Error $message
+    exit 1
+}

@@ -5,4 +5,10 @@ appDir = fso.GetParentFolderName(WScript.ScriptFullName)
 scriptPath = appDir & "\tools\start_app.ps1"
 
 command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " & Chr(34) & scriptPath & Chr(34)
-shell.Run command, 0, False
+exitCode = shell.Run(command, 0, True)
+
+If exitCode <> 0 Then
+    logPath = appDir & "\.logs\launcher.log"
+    shell.Popup "Khong the khoi dong Personal English Lab." & vbCrLf & _
+        "Xem loi tai:" & vbCrLf & logPath, 0, "Personal English Lab", 16
+End If
