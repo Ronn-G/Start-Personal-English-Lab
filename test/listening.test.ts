@@ -11,6 +11,7 @@ import {
   isComprehensionLevel,
   listeningItemId,
   mergeNonDecreasingCounter,
+  selectSourceDiverseListeningItems,
 } from "../src/lib/listening-practice";
 import {
   checksum,
@@ -344,7 +345,9 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     itemId: item.id,
   });
   assert.equal(state.items[0].progress.recognitionStatus, "recognized");
-  assert.equal(state.items[0].progress.difficult, false);
+  assert.equal(state.items[0].progress.difficult, true);
+  assert.equal(state.items[0].progress.listenCount, 4);
+  assert.equal(state.items[0].progress.loopCount, 3);
 
   state = execute(service, {
     action: "advance_step",
@@ -412,6 +415,15 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
         itemId: item.id,
       }),
     /đã kết thúc/,
+  );
+
+  assert.throws(() =>
+    execute(service, {
+      action: "mark_difficult",
+      lessonId: lesson.id,
+      sessionId,
+      itemId: item.id,
+    }),
   );
 
   const again = execute(service, { action: "practice_again", lessonId: lesson.id });
@@ -539,6 +551,88 @@ test("listening backup is optional, merges without lowering state, remaps confli
   replaceTarget.close();
 });
 
+test("listening actions persist independently for all four source types and roll back on failure", () => {
+  const database = databaseAt();
+  const lesson = fixtureLesson();
+  insertLesson(database, lesson);
+  const service = new ListeningService(database);
+  let state = execute(service, { action: "start", lessonId: lesson.id });
+  const sessionId = state.session!.id;
+  state = execute(service, {
+    action: "save_first_listen",
+    lessonId: lesson.id,
+    sessionId,
+    comprehension: "some_parts",
+  });
+
+  const sourceTypes = ["shadowing", "example", "sentence_mining", "vocabulary"];
+  const selected = sourceTypes.map((sourceType) => {
+    const item = state.items.find((candidate) => candidate.sourceType === sourceType);
+    assert.ok(item, `missing ${sourceType} listening item`);
+    return item;
+  });
+
+  for (const item of selected) {
+    execute(service, {
+      action: "record_listen",
+      lessonId: lesson.id,
+      sessionId,
+      itemId: item.id,
+    });
+    execute(service, {
+      action: "mark_recognized",
+      lessonId: lesson.id,
+      sessionId,
+      itemId: item.id,
+    });
+    state = execute(service, {
+      action: "mark_difficult",
+      lessonId: lesson.id,
+      sessionId,
+      itemId: item.id,
+    });
+    const saved = state.items.find((candidate) => candidate.id === item.id)!.progress;
+    assert.equal(saved.listenCount, 1);
+    assert.equal(saved.recognitionStatus, "recognized");
+    assert.equal(saved.difficult, true);
+  }
+
+  const reloaded = execute(service, { action: "status", lessonId: lesson.id });
+  for (const item of selected) {
+    const saved = reloaded.items.find((candidate) => candidate.id === item.id)!.progress;
+    assert.equal(saved.listenCount, 1);
+    assert.equal(saved.recognitionStatus, "recognized");
+    assert.equal(saved.difficult, true);
+  }
+
+  const rollbackItem = selected[0];
+  database.exec(`
+    CREATE TRIGGER fail_listening_item_action
+    BEFORE UPDATE ON listening_item_progress
+    WHEN OLD.id='${rollbackItem.id}'
+    BEGIN
+      SELECT RAISE(ABORT,'forced item action rollback');
+    END;
+  `);
+  assert.throws(
+    () =>
+      execute(service, {
+        action: "mark_recognized",
+        lessonId: lesson.id,
+        sessionId,
+        itemId: rollbackItem.id,
+      }),
+    /forced item action rollback/,
+  );
+  const afterRollback = execute(service, { action: "status", lessonId: lesson.id }).items.find(
+    (candidate) => candidate.id === rollbackItem.id,
+  )!.progress;
+  assert.equal(afterRollback.listenCount, 1);
+  assert.equal(afterRollback.recognitionStatus, "recognized");
+  assert.equal(afterRollback.difficult, true);
+  database.close();
+});
+
 test("extractListeningItems validates source identity and produces a bounded practice track set", () => {
   const lesson = fixtureLesson();
   const items = extractListeningItems(lesson);
@@ -551,6 +645,48 @@ test("extractListeningItems validates source identity and produces a bounded pra
         item.id === listeningItemId(lesson.id, item.sourceType, item.sourceItemId),
     ),
   );
+  const expected = new Map<string, Array<[sourceItemId: string, text: string]>>([
+    [
+      "shadowing",
+      lesson.deepPractice.shadowingPractice.lines.map((item) => [item.id, item.line.trim()]),
+    ],
+    ["example", lesson.exampleSentences.map((item) => [item.id, item.sentence.trim()])],
+    [
+      "sentence_mining",
+      lesson.deepPractice.sentenceMining.map((item) => [item.id, item.sentence.trim()]),
+    ],
+    [
+      "vocabulary",
+      lesson.vocabulary
+        .filter((item) => item.context)
+        .map((item) => [item.id, item.context!.trim()]),
+    ],
+  ]);
+  for (const [sourceType, sourceItems] of expected) {
+    assert.ok(sourceItems.length > 0, `missing fixture source type ${sourceType}`);
+    for (const [sourceItemId, text] of sourceItems) {
+      const resolved = items.find(
+        (item) => item.sourceType === sourceType && item.sourceItemId === sourceItemId,
+      );
+      assert.equal(resolved?.text, text);
+      assert.equal(
+        resolved?.id,
+        listeningItemId(
+          lesson.id,
+          sourceType as "shadowing" | "example" | "sentence_mining" | "vocabulary",
+          sourceItemId,
+        ),
+      );
+    }
+  }
+  const ranked = [...items].sort((left, right) => left.id.localeCompare(right.id));
+  const review = selectSourceDiverseListeningItems(ranked, 8);
+  assert.equal(review.length, 8);
+  assert.deepEqual(
+    new Set(review.map((item) => item.sourceType)),
+    new Set(["shadowing", "example", "sentence_mining", "vocabulary"]),
+  );
+  assert.equal(new Set(review.map((item) => item.id)).size, review.length);
 });
 
 test("listening UI exposes hidden transcript, loop controls, resume entries, and practice again", () => {
@@ -564,6 +700,18 @@ test("listening UI exposes hidden transcript, loop controls, resume entries, and
   assert.match(listeningUi, /Loop 5/);
   assert.match(listeningUi, /Stop loop/);
   assert.match(listeningUi, /Audio First review/);
+  assert.match(listeningUi, /Preparing Kokoro audio/);
+  assert.match(listeningUi, /Kokoro audio ready/);
+  assert.match(listeningUi, /Using browser voice/);
+  assert.match(listeningUi, /Audio failed/);
+  assert.match(listeningUi, /Retry Kokoro/);
+  assert.match(listeningUi, /aria-pressed=\{recognized\}/);
+  assert.match(listeningUi, /aria-pressed=\{difficult\}/);
+  assert.match(listeningUi, /savingAction === "mark_recognized"/);
+  assert.match(listeningUi, /savingAction === "mark_difficult"/);
+  assert.match(listeningUi, /Progress was not saved/);
+  assert.match(listeningUi, /Heard clearly \(selected\)/);
+  assert.match(listeningUi, /Marked difficult \(selected\)/);
   assert.match(listeningUi, /Practice Again/);
   assert.match(lessonUi, /Continue Listening Practice/);
   assert.match(dashboardUi, /Continue Listening/);

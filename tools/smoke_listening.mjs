@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, stat } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -9,6 +10,34 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const serverPath = resolve(".next", "standalone", "server.js");
 const dataDirectory = join(temporaryRoot, "data");
 let stderr = "";
+const kokoroRequests = [];
+const wav = Buffer.alloc(64);
+wav.write("RIFF", 0);
+wav.write("WAVE", 8);
+const kokoro = createServer((request, response) => {
+  if (request.method !== "POST" || request.url !== "/tts") {
+    response.writeHead(404).end();
+    return;
+  }
+  let raw = "";
+  request.setEncoding("utf8");
+  request.on("data", (chunk) => {
+    raw += chunk;
+  });
+  request.on("end", () => {
+    kokoroRequests.push(JSON.parse(raw));
+    response.writeHead(200, {
+      "Content-Type": "audio/wav",
+      "Content-Length": wav.length,
+    });
+    response.end(wav);
+  });
+});
+await new Promise((resolveListen) => kokoro.listen(0, "127.0.0.1", resolveListen));
+const kokoroAddress = kokoro.address();
+if (!kokoroAddress || typeof kokoroAddress === "string") {
+  throw new Error("Mock Kokoro did not bind to a TCP port.");
+}
 
 const server = spawn(process.execPath, [serverPath], {
   cwd: process.cwd(),
@@ -17,6 +46,7 @@ const server = spawn(process.execPath, [serverPath], {
     HOSTNAME: "127.0.0.1",
     PORT: port,
     PERSONAL_ENGLISH_LAB_DATA_DIR: dataDirectory,
+    KOKORO_BASE_URL: `http://127.0.0.1:${kokoroAddress.port}`,
   },
   stdio: ["ignore", "ignore", "pipe"],
 });
@@ -122,6 +152,27 @@ async function postListening(action, extra = {}) {
   return body;
 }
 
+async function prepareAudio(item) {
+  const response = await fetch(`${baseUrl}/api/audio/prepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: item.text, speed: 1 }),
+  });
+  const body = await response.json();
+  if (
+    !response.ok ||
+    body.provider !== "kokoro" ||
+    body.status !== "ready" ||
+    typeof body.url !== "string"
+  ) {
+    throw new Error(
+      `Kokoro preparation failed (${response.status}): ${JSON.stringify(body)}; ` +
+        `mock requests=${kokoroRequests.length}; server stderr=${stderr}`,
+    );
+  }
+  return body;
+}
+
 try {
   let health;
   for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -174,6 +225,30 @@ try {
   }
   const sessionId = started.session.id;
   const itemId = started.items[0].id;
+  const sourceTypes = ["shadowing", "example", "sentence_mining", "vocabulary"];
+  const sourceItems = sourceTypes.map((sourceType) => {
+    const item = started.items.find((candidate) => candidate.sourceType === sourceType);
+    if (!item) throw new Error(`Missing ${sourceType} listening fixture.`);
+    return item;
+  });
+  const firstAudioPair = await Promise.all([
+    prepareAudio(sourceItems[0]),
+    prepareAudio(sourceItems[0]),
+  ]);
+  const remainingAudio = await Promise.all(sourceItems.slice(1).map(prepareAudio));
+  const audioResults = [firstAudioPair[0], ...remainingAudio];
+  if (
+    new Set(audioResults.map((result) => result.url)).size !== sourceItems.length ||
+    firstAudioPair[0].url !== firstAudioPair[1].url ||
+    kokoroRequests.length !== sourceItems.length
+  ) {
+    throw new Error("Kokoro source preparation did not coalesce or isolate cache keys.");
+  }
+  for (const item of sourceItems) {
+    if (!kokoroRequests.some((request) => request.text === item.text)) {
+      throw new Error(`Kokoro received the wrong text for ${item.sourceType}.`);
+    }
+  }
 
   let state = await postListening("save_first_listen", {
     sessionId,
@@ -274,7 +349,14 @@ try {
   if (state.session.currentStep !== "sentence_review") {
     throw new Error("Second Listen did not persist.");
   }
-  state = await postListening("mark_recognized", { sessionId, itemId });
+  for (const item of sourceItems) {
+    state = await postListening("mark_recognized", { sessionId, itemId: item.id });
+    state = await postListening("mark_difficult", { sessionId, itemId: item.id });
+    const progress = state.items.find((candidate) => candidate.id === item.id)?.progress;
+    if (!progress || progress.recognitionStatus !== "recognized" || !progress.difficult) {
+      throw new Error(`Independent progress failed for ${item.sourceType}.`);
+    }
+  }
   state = await postListening("advance_step", {
     sessionId,
     nextStep: "final_relisten",
@@ -305,9 +387,25 @@ try {
   if (
     reloaded.session.id !== sessionId ||
     reloaded.session.firstListenComprehension !== "some_parts" ||
-    reloaded.session.secondListenComprehension !== "main_idea"
+    reloaded.session.secondListenComprehension !== "main_idea" ||
+    sourceItems.some((item) => {
+      const progress = reloaded.items.find((candidate) => candidate.id === item.id)?.progress;
+      return !progress || progress.recognitionStatus !== "recognized" || !progress.difficult;
+    })
   ) {
     throw new Error("Listening reload persistence failed.");
+  }
+  const dashboard = await fetch(`${baseUrl}/api/listening`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "dashboard" }),
+  }).then((response) => response.json());
+  if (
+    !dashboard.review.some(
+      (entry) => entry.lessonId === lesson.id && entry.difficultCount === sourceItems.length,
+    )
+  ) {
+    throw new Error("Difficult listening items did not appear in Re-listen review.");
   }
   const otherStatus = await fetch(`${baseUrl}/api/listening`, {
     method: "POST",
@@ -319,7 +417,7 @@ try {
   const backup = await fetch(`${baseUrl}/api/backup/export`).then((response) => response.json());
   if (
     backup.listeningSessions.length !== 1 ||
-    backup.listeningItemProgress.length !== 1 ||
+    backup.listeningItemProgress.length !== sourceItems.length ||
     "audioCache" in backup
   ) {
     throw new Error("Listening backup export failed.");
@@ -341,6 +439,10 @@ try {
         invalidTransitionRejected: true,
         malformedPayloadRejected: true,
         completedMutationRejected: true,
+        kokoroSourceTypesReady: sourceTypes,
+        kokoroRequests: kokoroRequests.length,
+        duplicateAudioCoalesced: true,
+        difficultReviewCount: sourceItems.length,
         speakingSourceLinked: true,
         backupListeningSessions: backup.listeningSessions.length,
         backupListeningItems: backup.listeningItemProgress.length,
@@ -356,5 +458,6 @@ try {
     new Promise((resolveExit) => server.once("exit", resolveExit)),
     new Promise((resolveTimeout) => setTimeout(resolveTimeout, 2_000)),
   ]);
+  await new Promise((resolveClose) => kokoro.close(resolveClose));
   await rm(temporaryRoot, { recursive: true, force: true });
 }

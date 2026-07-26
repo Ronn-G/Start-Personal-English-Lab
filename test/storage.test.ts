@@ -49,6 +49,7 @@ import {
 import {
   AUDIO_DEFAULTS,
   AudioQueue,
+  canUseBrowserFallback,
   canonicalAudioInput,
   normalizeAudioText,
   selectLessonAudioPreloadItems,
@@ -772,6 +773,45 @@ test("audio queue coalesces duplicates and runs concurrency one", async () => {
   assert.equal(calls, 2);
   assert.equal(max, 1);
 });
+test("audio preparation only permits fallback after a real failure", async () => {
+  for (const status of ["queued", "generating", "ready", "cancelled"] as const) {
+    assert.equal(canUseBrowserFallback(status), false);
+  }
+  assert.equal(canUseBrowserFallback("failed"), true);
+
+  const queue = new AudioQueue(1);
+  const firstStatuses: string[] = [];
+  const duplicateStatuses: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = async () => {
+    await gate;
+    return "/api/audio/ready";
+  };
+  const first = queue.enqueue({
+    key: "shared",
+    request,
+    priority: 4,
+    lessonId: "lesson",
+    onStatus: (status) => firstStatuses.push(status),
+  });
+  const duplicate = queue.enqueue({
+    key: "shared",
+    request,
+    priority: 0,
+    lessonId: "lesson",
+    onStatus: (status) => duplicateStatuses.push(status),
+  });
+  assert.deepEqual(firstStatuses, ["queued", "generating"]);
+  assert.deepEqual(duplicateStatuses, ["generating"]);
+  assert.equal(canUseBrowserFallback(duplicateStatuses.at(-1) as "generating"), false);
+  release();
+  assert.deepEqual(await Promise.all([first, duplicate]), ["/api/audio/ready", "/api/audio/ready"]);
+  assert.equal(firstStatuses.at(-1), "ready");
+  assert.equal(duplicateStatuses.at(-1), "ready");
+});
 test("audio cache service creates atomic WAV, hits cache, repairs missing metadata and clears safely", async () => {
   const root = temp();
   const db = new DatabaseSync(":memory:");
@@ -798,6 +838,52 @@ test("audio cache service creates atomic WAV, hits cache, repairs missing metada
   assert.equal((await service.info()).count, 1);
   await service.clear();
   assert.equal((await service.info()).count, 0);
+  db.close();
+});
+test("audio cache rejects empty text and retries a failed Kokoro generation", async () => {
+  const root = temp();
+  const db = new DatabaseSync(":memory:");
+  runMigrations(db);
+  const wav = Buffer.alloc(64);
+  wav.write("RIFF", 0);
+  wav.write("WAVE", 8);
+  let shouldFail = true;
+  let calls = 0;
+  const service = new AudioCacheService({
+    database: db,
+    root,
+    fetcher: (async () => {
+      calls += 1;
+      if (shouldFail) throw new TypeError("fetch failed");
+      return new Response(wav, { headers: { "content-type": "audio/wav" } });
+    }) as typeof fetch,
+  });
+
+  await assert.rejects(() => service.prepare(" \n "), /INVALID_TEXT/);
+  await assert.rejects(
+    () => service.prepare("Retry this sentence.", { voice: undefined }),
+    /fetch failed/,
+  );
+  assert.equal(
+    (
+      db.prepare("SELECT status FROM audio_cache").get() as {
+        status: string;
+      }
+    ).status,
+    "failed",
+  );
+  shouldFail = false;
+  const retried = await service.prepare("Retry this sentence.", { voice: undefined });
+  assert.equal(retried.cacheHit, false);
+  assert.equal(calls, 2);
+  assert.equal(
+    (
+      db.prepare("SELECT status FROM audio_cache").get() as {
+        status: string;
+      }
+    ).status,
+    "ready",
+  );
   db.close();
 });
 test("audio cleanup plan is LRU and protects current/generating files", () => {

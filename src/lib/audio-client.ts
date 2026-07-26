@@ -3,19 +3,27 @@ import {
   AudioQueue,
   canonicalAudioInput,
   rateToKokoroSpeed,
+  type AudioPreparationStatus,
   type AudioPreloadItem,
 } from "./audio-domain";
 
 const queue = new AudioQueue(1);
 let current: HTMLAudioElement | undefined;
 
-async function prepareAudio(text: string, priority: number, lessonId: string, speed = 1) {
+async function prepareAudio(
+  text: string,
+  priority: number,
+  lessonId: string,
+  speed = 1,
+  onStatus?: (status: AudioPreparationStatus) => void,
+) {
   const config = { ...AUDIO_DEFAULTS, speed };
   const key = canonicalAudioInput(text, config);
   return queue.enqueue({
     key,
     priority,
     lessonId,
+    onStatus,
     request: async () => {
       const response = await fetch("/api/audio/prepare", {
         method: "POST",
@@ -33,12 +41,15 @@ export const audioClient = {
   preload(
     items: AudioPreloadItem[],
     onProgress?: (ready: number, total: number, failed: number) => void,
+    onItemStatus?: (item: AudioPreloadItem, status: AudioPreparationStatus) => void,
   ) {
     let ready = 0;
     let failed = 0;
     const total = items.length;
     for (const item of items) {
-      prepareAudio(item.text, item.priority, item.lessonId, item.config.speed)
+      prepareAudio(item.text, item.priority, item.lessonId, item.config.speed, (status) =>
+        onItemStatus?.(item, status),
+      )
         .then(() => {
           ready++;
           onProgress?.(ready, total, failed);

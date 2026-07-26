@@ -3,11 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { audioClient } from "@/lib/audio-client";
-import type {
-  ComprehensionLevel,
-  FinalRelistenRating,
-  ListeningSourceType,
-  ListeningStep,
+import {
+  AUDIO_DEFAULTS,
+  rateToKokoroSpeed,
+  type AudioPreparationStatus,
+  type AudioPreloadItem,
+} from "@/lib/audio-domain";
+import {
+  selectSourceDiverseListeningItems,
+  type ComprehensionLevel,
+  type FinalRelistenRating,
+  type ListeningSourceType,
+  type ListeningStep,
 } from "@/lib/listening-practice";
 
 interface ListeningProgress {
@@ -107,6 +114,13 @@ interface PlaybackState {
   error?: string;
 }
 
+type ListeningAudioStatus = "idle" | "preparing" | "ready" | "browser" | "failed";
+
+interface ListeningAudioState {
+  status: ListeningAudioStatus;
+  error?: string;
+}
+
 function useListeningPlayback(
   lessonId: string,
   onRecorded: (itemId: string, repetitions: number) => void,
@@ -131,9 +145,20 @@ function useListeningPlayback(
     completed: 0,
     target: 0,
   });
+  const [itemAudio, setItemAudio] = useState<Record<string, ListeningAudioState>>({});
   useEffect(() => {
     onRecordedRef.current = onRecorded;
   }, [onRecorded]);
+
+  const updateItemAudio = useCallback(
+    (itemId: string, status: ListeningAudioStatus, error?: string) => {
+      setItemAudio((current) => ({
+        ...current,
+        [itemId]: { status, error },
+      }));
+    },
+    [],
+  );
 
   const recordRun = useCallback(() => {
     const run = runRef.current;
@@ -210,13 +235,15 @@ function useListeningPlayback(
       utterance.lang = "en-US";
       utterance.rate = run.rate;
       utterance.onend = () => finishOneRef.current();
-      utterance.onerror = () =>
+      utterance.onerror = () => {
+        updateItemAudio(run.itemId, "failed", "Browser voice stopped.");
         setState((current) => ({
           ...current,
           loading: false,
           playing: false,
           error: "Browser voice stopped. Try again.",
         }));
+      };
       speechRef.current = utterance;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
@@ -225,17 +252,20 @@ function useListeningPlayback(
         loading: false,
         playing: true,
         source: "browser",
+        error: undefined,
       }));
+      updateItemAudio(run.itemId, "browser", "Kokoro is unavailable.");
       return true;
     },
-    [],
+    [updateItemAudio],
   );
 
   const play = useCallback(
-    async (itemId: string, text: string, target = 1, rate = 0.86) => {
+    async (itemId: string, text: string, target = 1, rate = 0.86, allowBrowserFallback = true) => {
       stop(true);
       const run = { itemId, text, target, completed: 0, rate, recorded: false };
       runRef.current = run;
+      updateItemAudio(itemId, "preparing");
       setState({
         itemId,
         loading: true,
@@ -251,34 +281,77 @@ function useListeningPlayback(
         audioRef.current = audio;
         audio.onended = () => finishOneRef.current();
         audio.onerror = () => {
+          if (runRef.current !== run) return;
           audioRef.current = null;
-          if (!playBrowserFallback(run))
+          if (!allowBrowserFallback || !playBrowserFallback(run)) {
+            updateItemAudio(itemId, "failed", "Kokoro audio could not play.");
             setState((current) => ({
               ...current,
               loading: false,
               playing: false,
               error: "Kokoro audio could not play. Try again.",
             }));
+          }
         };
         await audio.play();
+        if (runRef.current !== run) {
+          audio.pause();
+          return;
+        }
+        updateItemAudio(itemId, "ready");
         setState((current) => ({
           ...current,
           loading: false,
           playing: true,
           source: "kokoro",
+          error: undefined,
         }));
-      } catch {
+      } catch (reason) {
         if (runRef.current !== run) return;
-        if (!playBrowserFallback(run)) {
+        const detail = reason instanceof Error ? reason.message : "Kokoro audio failed.";
+        if (!allowBrowserFallback || !playBrowserFallback(run)) {
+          updateItemAudio(itemId, "failed", detail);
           setState((current) => ({
             ...current,
             loading: false,
+            playing: false,
             error: "Audio is unavailable. Check Kokoro and try again.",
           }));
         }
       }
     },
-    [lessonId, playBrowserFallback, stop],
+    [lessonId, playBrowserFallback, stop, updateItemAudio],
+  );
+
+  const preload = useCallback(
+    (
+      items: Array<{
+        id: string;
+        text: string;
+        sourceType: ListeningSourceType;
+      }>,
+      rate: number,
+    ) => {
+      const speed = rateToKokoroSpeed(rate);
+      const preloadItems: AudioPreloadItem[] = items.map((item, index) => ({
+        lessonId,
+        itemId: item.id,
+        text: item.text,
+        sourceType: item.sourceType === "sentence_mining" ? "sentence-mining" : item.sourceType,
+        priority: index + 1,
+        config: { ...AUDIO_DEFAULTS, speed },
+      }));
+      audioClient.preload(preloadItems, undefined, (item, status: AudioPreparationStatus) => {
+        if (status === "queued" || status === "generating") {
+          updateItemAudio(item.itemId, "preparing");
+        } else if (status === "ready") {
+          updateItemAudio(item.itemId, "ready");
+        } else if (status === "failed") {
+          updateItemAudio(item.itemId, "failed", "Kokoro preparation failed.");
+        }
+      });
+    },
+    [lessonId, updateItemAudio],
   );
 
   const togglePause = useCallback(() => {
@@ -303,7 +376,17 @@ function useListeningPlayback(
     };
   }, [lessonId]);
 
-  return { state, play, stop, togglePause };
+  const retryKokoro = useCallback(
+    (itemId: string, text: string, rate: number) => play(itemId, text, 1, rate, false),
+    [play],
+  );
+
+  const audioStatus = useCallback(
+    (itemId: string): ListeningAudioState => itemAudio[itemId] ?? { status: "idle" },
+    [itemAudio],
+  );
+
+  return { state, play, retryKokoro, preload, audioStatus, stop, togglePause };
 }
 
 export default function ListeningPractice({
@@ -477,15 +560,25 @@ function ActiveListeningSession({
     );
   });
   const activeStep = stepOrder.indexOf(session.currentStep);
-  const reviewItems = [...data.items]
-    .sort(
+  const reviewItems = selectSourceDiverseListeningItems(
+    [...data.items].sort(
       (left, right) =>
         Number(session.revealedItemIds.includes(right.id)) -
           Number(session.revealedItemIds.includes(left.id)) ||
         Number(right.progress.difficult) - Number(left.progress.difficult) ||
         left.id.localeCompare(right.id),
-    )
-    .slice(0, 8);
+    ),
+    8,
+  );
+  const reviewAudioKey = reviewItems.map((item) => item.id).join("|");
+
+  useEffect(() => {
+    if (session.currentStep === "sentence_review") {
+      playback.preload(reviewItems, rate);
+    }
+    // The stable key prevents progress-only response updates from enqueueing the same batch again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playback.preload, rate, reviewAudioKey, session.currentStep]);
 
   async function practiceSpeaking(item: ListeningItemData) {
     setError("");
@@ -981,6 +1074,32 @@ function AudioFirstCard({
   practiceSpeaking: () => void;
 }) {
   const active = playback.state.itemId === item.id;
+  const audio = playback.audioStatus(item.id);
+  const recognized = item.progress.recognitionStatus === "recognized";
+  const difficult = item.progress.difficult;
+  const [savingAction, setSavingAction] = useState<"mark_recognized" | "mark_difficult" | null>(
+    null,
+  );
+  const [failedAction, setFailedAction] = useState<"mark_recognized" | "mark_difficult" | null>(
+    null,
+  );
+
+  async function saveAction(action: "mark_recognized" | "mark_difficult") {
+    setSavingAction(action);
+    setFailedAction(null);
+    const result = await command(action, { itemId: item.id }, true);
+    if (!result) setFailedAction(action);
+    setSavingAction(null);
+  }
+
+  const audioLabel =
+    audio.status === "ready"
+      ? "Kokoro audio ready"
+      : audio.status === "browser"
+        ? "Using browser voice"
+        : audio.status === "failed"
+          ? "Audio failed"
+          : "Preparing Kokoro audio...";
   return (
     <article className="rounded-2xl border-2 border-border p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -988,6 +1107,19 @@ function AudioFirstCard({
         <span className="text-xs text-muted">
           Heard {item.progress.listenCount} · looped {item.progress.loopCount}
         </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-bold text-muted">
+        <span role="status">{audioLabel}</span>
+        {audio.status === "browser" || audio.status === "failed" ? (
+          <button
+            type="button"
+            disabled={active && playback.state.loading}
+            onClick={() => void playback.retryKokoro(item.id, item.text, rate)}
+            className="text-primary underline disabled:cursor-wait disabled:opacity-50"
+          >
+            {active && playback.state.loading ? "Retrying Kokoro..." : "Retry Kokoro"}
+          </button>
+        ) : null}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
@@ -1066,11 +1198,18 @@ function AudioFirstCard({
       <div className="mt-4 flex flex-wrap gap-2">
         <button
           type="button"
-          aria-pressed={item.progress.recognitionStatus === "recognized"}
-          onClick={() => void command("mark_recognized", { itemId: item.id })}
-          className="rounded-full border-2 border-primary px-3 py-2 text-sm font-bold text-primary"
+          aria-pressed={recognized}
+          disabled={savingAction !== null || recognized}
+          onClick={() => void saveAction("mark_recognized")}
+          className={`rounded-full border-2 border-primary px-3 py-2 text-sm font-bold text-primary disabled:cursor-wait ${
+            recognized ? "bg-highlight" : ""
+          }`}
         >
-          I can hear it now
+          {savingAction === "mark_recognized"
+            ? "Saving..."
+            : recognized
+              ? "Heard clearly (selected)"
+              : "I can hear it now"}
         </button>
         {revealed ? (
           <button
@@ -1083,11 +1222,18 @@ function AudioFirstCard({
         ) : null}
         <button
           type="button"
-          aria-pressed={item.progress.difficult}
-          onClick={() => void command("mark_difficult", { itemId: item.id })}
-          className="rounded-full border-2 border-border px-3 py-2 text-sm font-bold"
+          aria-pressed={difficult}
+          disabled={savingAction !== null || difficult}
+          onClick={() => void saveAction("mark_difficult")}
+          className={`rounded-full border-2 px-3 py-2 text-sm font-bold disabled:cursor-wait ${
+            difficult ? "border-primary bg-highlight text-primary" : "border-border"
+          }`}
         >
-          Still difficult
+          {savingAction === "mark_difficult"
+            ? "Saving..."
+            : difficult
+              ? "Marked difficult (selected)"
+              : "Still difficult"}
         </button>
         {revealed && item.speakingPracticeItemId ? (
           <button
@@ -1099,6 +1245,19 @@ function AudioFirstCard({
           </button>
         ) : null}
       </div>
+      {failedAction ? (
+        <p role="alert" className="mt-3 text-sm font-bold text-wrong">
+          Progress was not saved.{" "}
+          <button
+            type="button"
+            disabled={savingAction !== null}
+            onClick={() => void saveAction(failedAction)}
+            className="underline disabled:opacity-50"
+          >
+            Retry
+          </button>
+        </p>
+      ) : null}
     </article>
   );
 }

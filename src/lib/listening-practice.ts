@@ -158,6 +158,29 @@ export function extractListeningItems(lesson: Lesson): ListeningItem[] {
   });
 }
 
+export function selectSourceDiverseListeningItems<
+  Item extends Pick<ListeningItem, "id" | "sourceType">,
+>(rankedItems: Item[], limit = 8): Item[] {
+  if (!Number.isInteger(limit) || limit < 1) return [];
+  const selected: Item[] = [];
+  const selectedIds = new Set<string>();
+  for (const sourceType of ["shadowing", "example", "sentence_mining", "vocabulary"] as const) {
+    const item = rankedItems.find((candidate) => candidate.sourceType === sourceType);
+    if (item && selected.length < limit) {
+      selected.push(item);
+      selectedIds.add(item.id);
+    }
+  }
+  for (const item of rankedItems) {
+    if (selected.length >= limit) break;
+    if (!selectedIds.has(item.id)) {
+      selected.push(item);
+      selectedIds.add(item.id);
+    }
+  }
+  return selected;
+}
+
 export function buildListeningTrack(items: ListeningItem[], maximumLength = 620): string {
   let track = "";
   for (const item of items) {

@@ -16,6 +16,8 @@ export interface AudioResult {
   url: string;
   cacheHit: boolean;
   sizeBytes: number;
+  provider: "kokoro";
+  status: "ready";
 }
 export interface AudioDeps {
   database: DatabaseSync;
@@ -75,7 +77,16 @@ export class AudioCacheService {
   async prepare(text: string, partial: Partial<AudioConfig> = {}): Promise<AudioResult> {
     const normalized = normalizeAudioText(text);
     if (!normalized || normalized.length > 650) throw new Error("INVALID_TEXT");
-    const config = { ...AUDIO_DEFAULTS, ...partial } as AudioConfig;
+    const config = {
+      ...AUDIO_DEFAULTS,
+      ...Object.fromEntries(
+        Object.entries(partial).filter(
+          (entry): entry is [string, AudioConfig[keyof AudioConfig]] => {
+            return entry[1] !== undefined;
+          },
+        ),
+      ),
+    } as AudioConfig;
     const key = audioCacheKey(normalized, config);
     const hit = await this.hit(key);
     if (hit) return hit;
@@ -118,7 +129,14 @@ export class AudioCacheService {
       this.deps.database
         .prepare("UPDATE audio_cache SET last_accessed_at=? WHERE cache_key=?")
         .run(new Date().toISOString(), key);
-      return { cacheKey: key, url: `/api/audio/${key}`, cacheHit: true, sizeBytes: row.size_bytes };
+      return {
+        cacheKey: key,
+        url: `/api/audio/${key}`,
+        cacheHit: true,
+        sizeBytes: row.size_bytes,
+        provider: "kokoro",
+        status: "ready",
+      };
     } catch {
       this.deps.database
         .prepare(
@@ -173,7 +191,14 @@ export class AudioCacheService {
         )
         .run(`${key}.wav`, bytes.length, done, done, done, key);
       await this.cleanup(key);
-      return { cacheKey: key, url: `/api/audio/${key}`, cacheHit: false, sizeBytes: bytes.length };
+      return {
+        cacheKey: key,
+        url: `/api/audio/${key}`,
+        cacheHit: false,
+        sizeBytes: bytes.length,
+        provider: "kokoro",
+        status: "ready",
+      };
     } catch (e) {
       await rm(tmp, { force: true });
       this.deps.database

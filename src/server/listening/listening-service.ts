@@ -530,13 +530,20 @@ export class ListeningService {
     this.requireStep(session, ["check_meaning", "sentence_review"]);
     const item = this.listeningItem(lesson, itemId);
     const now = new Date().toISOString();
-    this.upsertItem(item, now, {
-      listenDelta: 0,
-      loopDelta: 0,
-      transcriptRevealed: false,
-      recognitionStatus: mark === "recognized" ? "recognized" : "heard",
-      difficult: mark === "difficult",
-    });
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.upsertItem(item, now, {
+        listenDelta: 0,
+        loopDelta: 0,
+        transcriptRevealed: false,
+        recognitionStatus: mark === "recognized" ? "recognized" : "heard",
+        difficult: mark === "difficult" ? true : undefined,
+      });
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
     return this.statusWithLesson(lesson, sessionId);
   }
 
@@ -571,7 +578,6 @@ export class ListeningService {
             ELSE listening_item_progress.recognition_status
           END,
           difficult=CASE
-            WHEN excluded.recognition_status='recognized' THEN 0
             WHEN ? IS NOT NULL THEN excluded.difficult
             ELSE listening_item_progress.difficult
           END,
