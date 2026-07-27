@@ -12,7 +12,6 @@ import {
 import {
   selectSourceDiverseListeningItems,
   type ComprehensionLevel,
-  type FinalRelistenRating,
   type ListeningSourceType,
   type ListeningStep,
 } from "@/lib/listening-practice";
@@ -21,8 +20,7 @@ interface ListeningProgress {
   listenCount: number;
   loopCount: number;
   transcriptRevealed: boolean;
-  recognitionStatus: "not_started" | "heard" | "recognized";
-  difficult: boolean;
+  savedForRelisten: boolean;
   lastListenedAt: string | null;
 }
 
@@ -47,7 +45,6 @@ interface ListeningSessionData {
   firstListenComprehension: ComprehensionLevel | null;
   firstListenNote: string;
   secondListenComprehension: ComprehensionLevel | null;
-  finalRelistenRating: FinalRelistenRating | null;
   finalNote: string;
   revealedItemIds: string[];
   startedAt: string;
@@ -125,6 +122,7 @@ function useListeningPlayback(
   lessonId: string,
   onRecorded: (itemId: string, repetitions: number) => void,
 ) {
+  const mountedRef = useRef(true);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const finishOneRef = useRef<() => void>(() => undefined);
@@ -135,6 +133,7 @@ function useListeningPlayback(
     completed: number;
     rate: number;
     recorded: boolean;
+    source: "kokoro" | "browser" | null;
   } | null>(null);
   const onRecordedRef = useRef(onRecorded);
   const [state, setState] = useState<PlaybackState>({
@@ -152,6 +151,7 @@ function useListeningPlayback(
 
   const updateItemAudio = useCallback(
     (itemId: string, status: ListeningAudioStatus, error?: string) => {
+      if (!mountedRef.current) return;
       setItemAudio((current) => ({
         ...current,
         [itemId]: { status, error },
@@ -199,13 +199,19 @@ function useListeningPlayback(
     const audio = audioRef.current;
     if (audio) {
       audio.currentTime = 0;
-      void audio.play().catch(() =>
+      void audio.play().catch((reason) => {
+        if (runRef.current !== run) return;
+        updateItemAudio(
+          run.itemId,
+          "failed",
+          reason instanceof Error ? reason.message : "Kokoro playback failed.",
+        );
         setState((current) => ({
           ...current,
           playing: false,
           error: "Audio playback stopped. Try again.",
-        })),
-      );
+        }));
+      });
       return;
     }
     if ("speechSynthesis" in window) {
@@ -213,10 +219,19 @@ function useListeningPlayback(
       utterance.lang = "en-US";
       utterance.rate = run.rate;
       utterance.onend = () => finishOneRef.current();
+      utterance.onerror = () => {
+        if (runRef.current !== run) return;
+        updateItemAudio(run.itemId, "failed", "Browser voice stopped.");
+        setState((current) => ({
+          ...current,
+          playing: false,
+          error: "Browser voice stopped. Try again.",
+        }));
+      };
       speechRef.current = utterance;
       window.speechSynthesis.speak(utterance);
     }
-  }, [recordRun]);
+  }, [recordRun, updateItemAudio]);
   useEffect(() => {
     finishOneRef.current = finishOne;
   }, [finishOne]);
@@ -229,13 +244,19 @@ function useListeningPlayback(
       completed: number;
       rate: number;
       recorded: boolean;
+      source: "kokoro" | "browser" | null;
     }) => {
       if (!("speechSynthesis" in window) || runRef.current !== run) return false;
+      if (run.source === "browser") return true;
+      run.source = "browser";
+      audioRef.current?.pause();
+      audioRef.current = null;
       const utterance = new SpeechSynthesisUtterance(run.text);
       utterance.lang = "en-US";
       utterance.rate = run.rate;
       utterance.onend = () => finishOneRef.current();
       utterance.onerror = () => {
+        if (runRef.current !== run) return;
         updateItemAudio(run.itemId, "failed", "Browser voice stopped.");
         setState((current) => ({
           ...current,
@@ -263,7 +284,15 @@ function useListeningPlayback(
   const play = useCallback(
     async (itemId: string, text: string, target = 1, rate = 0.86, allowBrowserFallback = true) => {
       stop(true);
-      const run = { itemId, text, target, completed: 0, rate, recorded: false };
+      const run = {
+        itemId,
+        text,
+        target,
+        completed: 0,
+        rate,
+        recorded: false,
+        source: null as "kokoro" | "browser" | null,
+      };
       runRef.current = run;
       updateItemAudio(itemId, "preparing");
       setState({
@@ -274,38 +303,18 @@ function useListeningPlayback(
         completed: 0,
         target,
       });
+      let url: string;
       try {
-        const url = await audioClient.prepare(text, lessonId, rate);
-        if (runRef.current !== run) return;
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => finishOneRef.current();
-        audio.onerror = () => {
+        url = await audioClient.prepare(text, lessonId, rate, (status) => {
           if (runRef.current !== run) return;
-          audioRef.current = null;
-          if (!allowBrowserFallback || !playBrowserFallback(run)) {
-            updateItemAudio(itemId, "failed", "Kokoro audio could not play.");
-            setState((current) => ({
-              ...current,
-              loading: false,
-              playing: false,
-              error: "Kokoro audio could not play. Try again.",
-            }));
+          if (status === "queued" || status === "generating") {
+            updateItemAudio(itemId, "preparing");
+          } else if (status === "ready") {
+            updateItemAudio(itemId, "ready");
+          } else if (status === "failed") {
+            updateItemAudio(itemId, "failed", "Kokoro preparation failed.");
           }
-        };
-        await audio.play();
-        if (runRef.current !== run) {
-          audio.pause();
-          return;
-        }
-        updateItemAudio(itemId, "ready");
-        setState((current) => ({
-          ...current,
-          loading: false,
-          playing: true,
-          source: "kokoro",
-          error: undefined,
-        }));
+        });
       } catch (reason) {
         if (runRef.current !== run) return;
         const detail = reason instanceof Error ? reason.message : "Kokoro audio failed.";
@@ -318,6 +327,49 @@ function useListeningPlayback(
             error: "Audio is unavailable. Check Kokoro and try again.",
           }));
         }
+        return;
+      }
+      if (runRef.current !== run) return;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => finishOneRef.current();
+      audio.onerror = () => {
+        if (runRef.current !== run) return;
+        if (!allowBrowserFallback || !playBrowserFallback(run)) {
+          updateItemAudio(itemId, "failed", "Kokoro audio could not play.");
+          setState((current) => ({
+            ...current,
+            loading: false,
+            playing: false,
+            error: "Kokoro audio could not play. Try again.",
+          }));
+        }
+      };
+      try {
+        await audio.play();
+        if (runRef.current !== run || run.source === "browser") {
+          audio.pause();
+          return;
+        }
+        run.source = "kokoro";
+        updateItemAudio(itemId, "ready");
+        setState((current) => ({
+          ...current,
+          loading: false,
+          playing: true,
+          source: "kokoro",
+          error: undefined,
+        }));
+      } catch (reason) {
+        if (runRef.current !== run || run.source === "browser") return;
+        const detail = reason instanceof Error ? reason.message : "Kokoro playback failed.";
+        updateItemAudio(itemId, "failed", detail);
+        setState((current) => ({
+          ...current,
+          loading: false,
+          playing: false,
+          error: "Kokoro audio could not start. Try Play again.",
+        }));
       }
     },
     [lessonId, playBrowserFallback, stop, updateItemAudio],
@@ -368,7 +420,9 @@ function useListeningPlayback(
   }, [state.paused]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       audioRef.current?.pause();
       if ("speechSynthesis" in window) window.speechSynthesis.cancel();
       runRef.current = null;
@@ -547,9 +601,6 @@ function ActiveListeningSession({
   const [secondRating, setSecondRating] = useState<ComprehensionLevel | null>(
     session.secondListenComprehension,
   );
-  const [finalRating, setFinalRating] = useState<FinalRelistenRating | null>(
-    session.finalRelistenRating,
-  );
   const [finalNote, setFinalNote] = useState(session.finalNote);
   const [rate, setRate] = useState(0.86);
   const playback = useListeningPlayback(data.lessonId, (itemId, repetitions) => {
@@ -564,9 +615,7 @@ function ActiveListeningSession({
     [...data.items].sort(
       (left, right) =>
         Number(session.revealedItemIds.includes(right.id)) -
-          Number(session.revealedItemIds.includes(left.id)) ||
-        Number(right.progress.difficult) - Number(left.progress.difficult) ||
-        left.id.localeCompare(right.id),
+          Number(session.revealedItemIds.includes(left.id)) || left.id.localeCompare(right.id),
     ),
     8,
   );
@@ -732,7 +781,7 @@ function ActiveListeningSession({
           <div>
             <h3 className="text-xl font-extrabold text-heading">Audio First review</h3>
             <p className="mt-1 text-body">
-              Listen before revealing. Loop a sentence, then decide what you can hear now.
+              Listen before revealing, repeat as needed, then use the sentence in Speaking Ladder.
             </p>
           </div>
           <div className="space-y-4">
@@ -769,30 +818,6 @@ function ActiveListeningSession({
             <li>Do not translate every word.</li>
           </ul>
           <PracticeTrack track={data.track} rate={rate} setRate={setRate} playback={playback} />
-          <fieldset>
-            <legend className="font-extrabold text-heading">How did the final listen feel?</legend>
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              {[
-                ["easier", "Easier than before"],
-                ["same", "About the same"],
-                ["still_difficult", "Still difficult"],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={finalRating === value}
-                  onClick={() => setFinalRating(value as FinalRelistenRating)}
-                  className={`rounded-xl border-2 p-3 text-left font-bold ${
-                    finalRating === value
-                      ? "border-primary bg-highlight text-primary"
-                      : "border-border text-body"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </fieldset>
           <div>
             <label htmlFor="final-listen-note" className="font-extrabold text-heading">
               Final note (optional)
@@ -807,10 +832,10 @@ function ActiveListeningSession({
             />
           </div>
           <PrimaryButton
-            disabled={busy || !finalRating}
+            disabled={busy}
             onClick={() => {
               playback.stop(true);
-              void command("complete", { rating: finalRating, note: finalNote });
+              void command("complete", { note: finalNote });
             }}
           >
             Complete listening session
@@ -962,6 +987,98 @@ function UsefulPhrases({ items }: { items: ListeningItemData[] }) {
   );
 }
 
+function ListeningAudioControls({
+  item,
+  rate,
+  playback,
+  loops = false,
+}: {
+  item: ListeningItemData;
+  rate: number;
+  playback: ReturnType<typeof useListeningPlayback>;
+  loops?: boolean;
+}) {
+  const active = playback.state.itemId === item.id;
+  const audio = playback.audioStatus(item.id);
+  const audioLabel =
+    audio.status === "ready"
+      ? "Kokoro audio ready"
+      : audio.status === "browser"
+        ? "Using browser voice"
+        : audio.status === "failed"
+          ? "Audio failed"
+          : audio.status === "preparing"
+            ? "Preparing Kokoro audio"
+            : "Kokoro audio starts on Play";
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-muted">
+        <span role="status">{audioLabel}</span>
+        {audio.status === "browser" || audio.status === "failed" ? (
+          <button
+            type="button"
+            disabled={active && playback.state.loading}
+            onClick={() => void playback.retryKokoro(item.id, item.text, rate)}
+            className="text-primary underline disabled:cursor-wait disabled:opacity-50"
+          >
+            {active && playback.state.loading ? "Retrying Kokoro..." : "Retry Kokoro"}
+          </button>
+        ) : null}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={active && playback.state.loading}
+          onClick={() => void playback.play(item.id, item.text, 1, rate)}
+          className="rounded-full bg-primary px-4 py-2 text-sm font-bold text-white disabled:cursor-wait disabled:opacity-50"
+        >
+          {active && playback.state.loading && playback.state.target === 1
+            ? "Preparing..."
+            : "Play"}
+        </button>
+        {loops ? (
+          <>
+            <button
+              type="button"
+              disabled={active && playback.state.loading}
+              onClick={() => void playback.play(item.id, item.text, 3, rate)}
+              className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary disabled:cursor-wait disabled:opacity-50"
+            >
+              Loop 3
+            </button>
+            <button
+              type="button"
+              disabled={active && playback.state.loading}
+              onClick={() => void playback.play(item.id, item.text, 5, rate)}
+              className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary disabled:cursor-wait disabled:opacity-50"
+            >
+              Loop 5
+            </button>
+            <button
+              type="button"
+              disabled={
+                !active ||
+                (!playback.state.loading && !playback.state.playing && !playback.state.paused)
+              }
+              onClick={() => playback.stop(true)}
+              className="rounded-full border-2 border-border px-4 py-2 text-sm font-bold disabled:opacity-40"
+            >
+              Stop
+            </button>
+          </>
+        ) : null}
+      </div>
+      {active && playback.state.target > 1 ? (
+        <p role="status" className="mt-2 text-sm font-bold text-muted">
+          {playback.state.loading
+            ? "Preparing Kokoro audio"
+            : `Listened ${playback.state.completed} of ${playback.state.target}`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function SentenceTranscript({
   items,
   revealed,
@@ -975,7 +1092,7 @@ function SentenceTranscript({
   rate: number;
   command: Command;
 }) {
-  const visibleItems = items.slice(0, 8);
+  const visibleItems = selectSourceDiverseListeningItems(items, 8);
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1001,55 +1118,22 @@ function SentenceTranscript({
             <li key={item.id} className="rounded-xl border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-bold text-muted">Sentence {index + 1}</span>
-                <div className="flex flex-wrap gap-2">
+                {!isRevealed ? (
                   <button
                     type="button"
-                    onClick={() => void playback.play(item.id, item.text, 1, rate)}
+                    onClick={() => void command("reveal_item", { itemId: item.id })}
                     className="font-bold text-primary underline"
                   >
-                    Listen
+                    Reveal sentence
                   </button>
-                  {!isRevealed ? (
-                    <button
-                      type="button"
-                      onClick={() => void command("reveal_item", { itemId: item.id })}
-                      className="font-bold text-primary underline"
-                    >
-                      Reveal sentence
-                    </button>
-                  ) : null}
-                </div>
+                ) : null}
+              </div>
+              <div className="mt-3">
+                <ListeningAudioControls item={item} rate={rate} playback={playback} />
               </div>
               <p className={`mt-2 text-lg font-bold ${isRevealed ? "" : "select-none blur-sm"}`}>
                 {isRevealed ? item.text : "This sentence stays hidden until you reveal it."}
               </p>
-              {isRevealed ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void command("mark_recognized", { itemId: item.id })}
-                    className="rounded-full border border-primary px-3 py-1 text-sm font-bold text-primary"
-                  >
-                    I could hear it
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void command("mark_understood_after_reading", { itemId: item.id })
-                    }
-                    className="rounded-full border border-primary px-3 py-1 text-sm font-bold text-primary"
-                  >
-                    I understood it after reading
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void command("mark_difficult", { itemId: item.id })}
-                    className="rounded-full border border-border px-3 py-1 text-sm font-bold"
-                  >
-                    Still difficult
-                  </button>
-                </div>
-              ) : null}
             </li>
           );
         })}
@@ -1073,33 +1157,21 @@ function AudioFirstCard({
   command: Command;
   practiceSpeaking: () => void;
 }) {
-  const active = playback.state.itemId === item.id;
-  const audio = playback.audioStatus(item.id);
-  const recognized = item.progress.recognitionStatus === "recognized";
-  const difficult = item.progress.difficult;
-  const [savingAction, setSavingAction] = useState<"mark_recognized" | "mark_difficult" | null>(
-    null,
-  );
-  const [failedAction, setFailedAction] = useState<"mark_recognized" | "mark_difficult" | null>(
-    null,
-  );
+  const [savingBookmark, setSavingBookmark] = useState(false);
+  const [bookmarkError, setBookmarkError] = useState(false);
 
-  async function saveAction(action: "mark_recognized" | "mark_difficult") {
-    setSavingAction(action);
-    setFailedAction(null);
-    const result = await command(action, { itemId: item.id }, true);
-    if (!result) setFailedAction(action);
-    setSavingAction(null);
+  async function toggleSaved() {
+    setSavingBookmark(true);
+    setBookmarkError(false);
+    const result = await command(
+      "set_saved_for_relisten",
+      { itemId: item.id, saved: !item.progress.savedForRelisten },
+      true,
+    );
+    if (!result) setBookmarkError(true);
+    setSavingBookmark(false);
   }
 
-  const audioLabel =
-    audio.status === "ready"
-      ? "Kokoro audio ready"
-      : audio.status === "browser"
-        ? "Using browser voice"
-        : audio.status === "failed"
-          ? "Audio failed"
-          : "Preparing Kokoro audio...";
   return (
     <article className="rounded-2xl border-2 border-border p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1108,74 +1180,16 @@ function AudioFirstCard({
           Heard {item.progress.listenCount} · looped {item.progress.loopCount}
         </span>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-bold text-muted">
-        <span role="status">{audioLabel}</span>
-        {audio.status === "browser" || audio.status === "failed" ? (
-          <button
-            type="button"
-            disabled={active && playback.state.loading}
-            onClick={() => void playback.retryKokoro(item.id, item.text, rate)}
-            className="text-primary underline disabled:cursor-wait disabled:opacity-50"
-          >
-            {active && playback.state.loading ? "Retrying Kokoro..." : "Retry Kokoro"}
-          </button>
-        ) : null}
+      <div className="mt-2">
+        <ListeningAudioControls item={item} rate={rate} playback={playback} loops />
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => void playback.play(item.id, item.text, 1, rate)}
-          className="rounded-full bg-primary px-4 py-2 text-sm font-bold text-white"
-        >
-          Play once
-        </button>
-        <button
-          type="button"
-          onClick={() => void playback.play(item.id, item.text, 3, rate)}
-          className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary"
-        >
-          Loop 3
-        </button>
-        <button
-          type="button"
-          onClick={() => void playback.play(item.id, item.text, 5, rate)}
-          className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary"
-        >
-          Loop 5
-        </button>
-        {active && (playback.state.playing || playback.state.paused) ? (
-          <>
-            <button
-              type="button"
-              onClick={playback.togglePause}
-              className="rounded-full border-2 border-border px-4 py-2 text-sm font-bold"
-            >
-              {playback.state.paused ? "Continue" : "Pause"}
-            </button>
-            <button
-              type="button"
-              onClick={() => playback.stop(true)}
-              className="rounded-full border-2 border-border px-4 py-2 text-sm font-bold"
-            >
-              Stop loop
-            </button>
-          </>
-        ) : null}
-      </div>
-      {active && playback.state.target > 1 ? (
-        <p role="status" className="mt-2 text-sm font-bold text-muted">
-          {playback.state.loading
-            ? "Preparing audio…"
-            : `Listened ${playback.state.completed} of ${playback.state.target}`}
-        </p>
-      ) : null}
       {!revealed ? (
         <button
           type="button"
           onClick={() => void command("reveal_item", { itemId: item.id })}
           className="mt-4 font-bold text-primary underline"
         >
-          Reveal transcript
+          Reveal sentence
         </button>
       ) : (
         <div className="mt-4 rounded-xl bg-highlight p-4">
@@ -1196,45 +1210,6 @@ function AudioFirstCard({
         </div>
       )}
       <div className="mt-4 flex flex-wrap gap-2">
-        <button
-          type="button"
-          aria-pressed={recognized}
-          disabled={savingAction !== null || recognized}
-          onClick={() => void saveAction("mark_recognized")}
-          className={`rounded-full border-2 border-primary px-3 py-2 text-sm font-bold text-primary disabled:cursor-wait ${
-            recognized ? "bg-highlight" : ""
-          }`}
-        >
-          {savingAction === "mark_recognized"
-            ? "Saving..."
-            : recognized
-              ? "Heard clearly (selected)"
-              : "I can hear it now"}
-        </button>
-        {revealed ? (
-          <button
-            type="button"
-            onClick={() => void command("mark_understood_after_reading", { itemId: item.id })}
-            className="rounded-full border-2 border-primary px-3 py-2 text-sm font-bold text-primary"
-          >
-            I understand it after reading
-          </button>
-        ) : null}
-        <button
-          type="button"
-          aria-pressed={difficult}
-          disabled={savingAction !== null || difficult}
-          onClick={() => void saveAction("mark_difficult")}
-          className={`rounded-full border-2 px-3 py-2 text-sm font-bold disabled:cursor-wait ${
-            difficult ? "border-primary bg-highlight text-primary" : "border-border"
-          }`}
-        >
-          {savingAction === "mark_difficult"
-            ? "Saving..."
-            : difficult
-              ? "Marked difficult (selected)"
-              : "Still difficult"}
-        </button>
         {revealed && item.speakingPracticeItemId ? (
           <button
             type="button"
@@ -1244,14 +1219,33 @@ function AudioFirstCard({
             Practice this sentence
           </button>
         ) : null}
+        <button
+          type="button"
+          aria-pressed={item.progress.savedForRelisten}
+          disabled={savingBookmark}
+          onClick={() => void toggleSaved()}
+          className={`rounded-full border-2 px-3 py-2 text-sm font-bold disabled:cursor-wait disabled:opacity-50 ${
+            item.progress.savedForRelisten
+              ? "border-primary bg-highlight text-primary"
+              : "border-border text-body"
+          }`}
+        >
+          {savingBookmark
+            ? item.progress.savedForRelisten
+              ? "Removing..."
+              : "Saving..."
+            : item.progress.savedForRelisten
+              ? "Remove from re-listen"
+              : "Save for re-listen"}
+        </button>
       </div>
-      {failedAction ? (
+      {bookmarkError ? (
         <p role="alert" className="mt-3 text-sm font-bold text-wrong">
-          Progress was not saved.{" "}
+          Re-listen bookmark was not saved.{" "}
           <button
             type="button"
-            disabled={savingAction !== null}
-            onClick={() => void saveAction(failedAction)}
+            disabled={savingBookmark}
+            onClick={() => void toggleSaved()}
             className="underline disabled:opacity-50"
           >
             Retry
@@ -1276,7 +1270,7 @@ function CompletedListening({
   back: () => void;
 }) {
   const playback = useListeningPlayback(data.lessonId, () => undefined);
-  const difficult = data.items.filter((item) => item.progress.difficult).length;
+  const saved = data.items.filter((item) => item.progress.savedForRelisten).length;
   return (
     <section className="mx-auto max-w-3xl rounded-3xl border-2 border-border bg-card p-8 text-center">
       <h2 className="text-3xl font-extrabold text-heading">Listening session complete</h2>
@@ -1298,7 +1292,7 @@ function CompletedListening({
               : "—"
           }
         />
-        <Stat label="Difficult sentences" value={difficult} />
+        <Stat label="Saved sentences" value={saved} />
       </div>
       <div className="mx-auto mt-6 max-w-xl text-left">
         <PracticeTrack

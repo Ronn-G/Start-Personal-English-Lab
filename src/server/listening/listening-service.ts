@@ -2,15 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import {
-  LISTENING_RECOGNITION_STATES,
   LISTENING_STEPS,
   assertListeningTransition,
   buildListeningTrackFromTranscript,
   extractListeningItems,
   isComprehensionLevel,
-  isFinalRelistenRating,
   type ListeningItem,
-  type ListeningRecognitionState,
   type ListeningStep,
 } from "../../lib/listening-practice";
 import type { Lesson } from "../../types/lesson";
@@ -49,8 +46,9 @@ interface ItemProgressRow {
   listen_count: number;
   loop_count: number;
   transcript_revealed: number;
-  recognition_status: ListeningRecognitionState;
+  recognition_status: string;
   difficult: number;
+  saved_for_relisten: number;
   last_listened_at: string | null;
   updated_at: string;
 }
@@ -65,6 +63,7 @@ export interface ListeningCommand {
   nextStep?: unknown;
   rating?: unknown;
   count?: unknown;
+  saved?: unknown;
 }
 
 function requiredString(value: unknown, message: string): string {
@@ -106,8 +105,7 @@ function mapProgress(row: ItemProgressRow | undefined) {
       listenCount: 0,
       loopCount: 0,
       transcriptRevealed: false,
-      recognitionStatus: "not_started" as const,
-      difficult: false,
+      savedForRelisten: false,
       lastListenedAt: null,
     };
   }
@@ -115,8 +113,7 @@ function mapProgress(row: ItemProgressRow | undefined) {
     listenCount: row.listen_count,
     loopCount: row.loop_count,
     transcriptRevealed: Boolean(row.transcript_revealed),
-    recognitionStatus: row.recognition_status,
-    difficult: Boolean(row.difficult),
+    savedForRelisten: Boolean(row.saved_for_relisten),
     lastListenedAt: row.last_listened_at,
   };
 }
@@ -176,32 +173,16 @@ export class ListeningService {
           requiredString(command.itemId, "Thiếu listening item ID."),
           command.count,
         );
-      case "mark_recognized":
-        return this.markItem(
+      case "set_saved_for_relisten":
+        return this.setSavedForRelisten(
           lessonId,
-          requiredString(command.sessionId, "Thiếu session ID."),
           requiredString(command.itemId, "Thiếu listening item ID."),
-          "recognized",
-        );
-      case "mark_difficult":
-        return this.markItem(
-          lessonId,
-          requiredString(command.sessionId, "Thiếu session ID."),
-          requiredString(command.itemId, "Thiếu listening item ID."),
-          "difficult",
-        );
-      case "mark_understood_after_reading":
-        return this.markItem(
-          lessonId,
-          requiredString(command.sessionId, "Thiếu session ID."),
-          requiredString(command.itemId, "Thiếu listening item ID."),
-          "understood",
+          command.saved,
         );
       case "complete":
         return this.complete(
           lessonId,
           requiredString(command.sessionId, "Thiếu session ID."),
-          command.rating,
           command.note,
         );
       default:
@@ -235,24 +216,45 @@ export class ListeningService {
       .get() as
       | { lesson_id: string; title: string; current_step: ListeningStep; updated_at: string }
       | undefined;
-    const review = this.database
+    const reviewRows = this.database
       .prepare(
-        `SELECT l.id lesson_id,l.title,MAX(s.completed_at) last_listened,
-                COALESCE((SELECT SUM(p.difficult)
-                  FROM listening_item_progress p WHERE p.lesson_id=l.id),0) difficult_count
-         FROM listening_sessions s
-         JOIN lessons l ON l.id=s.lesson_id
-         WHERE s.status='completed' AND l.deleted_at IS NULL
-         GROUP BY l.id,l.title
-         ORDER BY difficult_count DESC,last_listened DESC
-         LIMIT 5`,
+        `SELECT p.id item_id,p.lesson_id,p.source_type,p.source_item_id,
+                l.title,l.lesson_json
+         FROM listening_item_progress p
+         JOIN lessons l ON l.id=p.lesson_id
+         WHERE p.saved_for_relisten=1 AND l.deleted_at IS NULL
+         ORDER BY p.updated_at DESC
+         LIMIT 12`,
       )
       .all() as Array<{
+      item_id: string;
       lesson_id: string;
+      source_type: string;
+      source_item_id: string;
       title: string;
-      last_listened: string;
-      difficult_count: number;
+      lesson_json: string;
     }>;
+    const review = reviewRows.flatMap((row) => {
+      const item = extractListeningItems(JSON.parse(row.lesson_json) as Lesson).find(
+        (candidate) =>
+          candidate.id === row.item_id &&
+          candidate.sourceType === row.source_type &&
+          candidate.sourceItemId === row.source_item_id,
+      );
+      return item
+        ? [
+            {
+              lessonId: row.lesson_id,
+              title: row.title,
+              itemId: item.id,
+              sourceType: item.sourceType,
+              sourceItemId: item.sourceItemId,
+              text: item.text,
+              targetPhrase: item.targetPhrase,
+            },
+          ]
+        : [];
+    });
     return {
       active: active
         ? {
@@ -262,12 +264,7 @@ export class ListeningService {
             updatedAt: active.updated_at,
           }
         : null,
-      review: review.map((item) => ({
-        lessonId: item.lesson_id,
-        title: item.title,
-        lastListenedAt: item.last_listened,
-        difficultCount: Number(item.difficult_count),
-      })),
+      review,
     };
   }
 
@@ -519,32 +516,33 @@ export class ListeningService {
     return this.statusWithLesson(lesson, sessionId);
   }
 
-  private markItem(
-    lessonId: string,
-    sessionId: string,
-    itemId: string,
-    mark: "recognized" | "difficult" | "understood",
-  ) {
+  private setSavedForRelisten(lessonId: string, itemId: string, saved: unknown) {
+    if (typeof saved !== "boolean") {
+      throw new StorageError("VALIDATION_ERROR", "Trạng thái lưu nghe lại không hợp lệ.");
+    }
     const lesson = this.lesson(lessonId);
-    const session = this.mutableSession(lessonId, sessionId);
-    this.requireStep(session, ["check_meaning", "sentence_review"]);
     const item = this.listeningItem(lesson, itemId);
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.upsertItem(item, now, {
-        listenDelta: 0,
-        loopDelta: 0,
-        transcriptRevealed: false,
-        recognitionStatus: mark === "recognized" ? "recognized" : "heard",
-        difficult: mark === "difficult" ? true : undefined,
-      });
+      this.database
+        .prepare(
+          `INSERT INTO listening_item_progress(
+            id,lesson_id,source_type,source_item_id,listen_count,loop_count,
+            transcript_revealed,recognition_status,difficult,saved_for_relisten,
+            last_listened_at,updated_at
+          ) VALUES(?,?,?,?,0,0,0,'not_started',0,?,NULL,?)
+          ON CONFLICT(lesson_id,id) DO UPDATE SET
+            saved_for_relisten=excluded.saved_for_relisten,
+            updated_at=excluded.updated_at`,
+        )
+        .run(item.id, item.lessonId, item.sourceType, item.sourceItemId, saved ? 1 : 0, now);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
     }
-    return this.statusWithLesson(lesson, sessionId);
+    return this.status(lessonId);
   }
 
   private upsertItem(
@@ -554,33 +552,19 @@ export class ListeningService {
       listenDelta: number;
       loopDelta: number;
       transcriptRevealed: boolean;
-      recognitionStatus?: ListeningRecognitionState;
-      difficult?: boolean;
     },
   ) {
-    const recognition = update.recognitionStatus ?? (update.listenDelta ? "heard" : "not_started");
-    if (!LISTENING_RECOGNITION_STATES.includes(recognition)) {
-      throw new StorageError("VALIDATION_ERROR", "Trạng thái nhận diện câu không hợp lệ.");
-    }
     this.database
       .prepare(
         `INSERT INTO listening_item_progress(
           id,lesson_id,source_type,source_item_id,listen_count,loop_count,
-          transcript_revealed,recognition_status,difficult,last_listened_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+          transcript_revealed,recognition_status,difficult,saved_for_relisten,
+          last_listened_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,'not_started',0,0,?,?)
         ON CONFLICT(lesson_id,id) DO UPDATE SET
           listen_count=listening_item_progress.listen_count+excluded.listen_count,
           loop_count=listening_item_progress.loop_count+excluded.loop_count,
           transcript_revealed=MAX(listening_item_progress.transcript_revealed,excluded.transcript_revealed),
-          recognition_status=CASE
-            WHEN excluded.recognition_status='recognized' THEN 'recognized'
-            WHEN listening_item_progress.recognition_status='not_started' AND excluded.recognition_status='heard' THEN 'heard'
-            ELSE listening_item_progress.recognition_status
-          END,
-          difficult=CASE
-            WHEN ? IS NOT NULL THEN excluded.difficult
-            ELSE listening_item_progress.difficult
-          END,
           last_listened_at=CASE
             WHEN excluded.listen_count>0 THEN excluded.last_listened_at
             ELSE listening_item_progress.last_listened_at
@@ -595,21 +579,15 @@ export class ListeningService {
         update.listenDelta,
         update.loopDelta,
         update.transcriptRevealed ? 1 : 0,
-        recognition,
-        update.difficult ? 1 : 0,
         update.listenDelta ? now : null,
         now,
-        update.difficult === undefined ? null : 1,
       );
   }
 
-  private complete(lessonId: string, sessionId: string, rating: unknown, note: unknown) {
+  private complete(lessonId: string, sessionId: string, note: unknown) {
     const lesson = this.lesson(lessonId);
     const row = this.mutableSession(lessonId, sessionId);
     this.requireStep(row, ["final_relisten"]);
-    if (!isFinalRelistenRating(rating)) {
-      throw new StorageError("VALIDATION_ERROR", "Đánh giá nghe lại cuối không hợp lệ.");
-    }
     const finalNote = optionalNote(note);
     assertListeningTransition(row.current_step, "complete");
     const now = new Date().toISOString();
@@ -618,11 +596,11 @@ export class ListeningService {
       const result = this.database
         .prepare(
           `UPDATE listening_sessions
-           SET status='completed',current_step='complete',final_relisten_rating=?,
+           SET status='completed',current_step='complete',
                final_note=?,completed_at=?,updated_at=?
            WHERE id=? AND lesson_id=? AND status='active' AND current_step='final_relisten'`,
         )
-        .run(rating, finalNote, now, now, sessionId, lessonId);
+        .run(finalNote, now, now, sessionId, lessonId);
       if (Number(result.changes) !== 1) {
         throw new StorageError("CONFLICT", "Không thể hoàn thành phiên luyện nghe.");
       }

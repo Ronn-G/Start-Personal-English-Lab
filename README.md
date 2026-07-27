@@ -20,9 +20,9 @@ Invoke-RestMethod http://127.0.0.1:5050/health
 Test-NetConnection 127.0.0.1 -Port 5050
 ```
 
-Nút nghe hiển thị `Kokoro local` khi dùng cache/Kokoro và `Browser voice fallback` khi Kokoro
-không phản hồi, trả WAV lỗi hoặc playback thất bại. Mỗi lần bấm đều thử Kokoro lại nên fallback
-không bị khóa vĩnh viễn.
+Nút nghe trong Check Meaning và Sentence Review dùng chung lifecycle Kokoro-first: preparing,
+Kokoro ready, browser fallback hoặc failed đều được hiển thị. Browser voice chỉ chạy sau lỗi Kokoro
+thực sự từ một thao tác Play; `Retry Kokoro` không gọi fallback.
 
 Entry point nằm trong `src/app`; UI ở `src/components`; domain/client helpers ở `src/lib`;
 SQLite, backup và audio cache ở `src/server`; kiểu dữ liệu ở `src/types`. Công cụ và test nằm
@@ -43,7 +43,7 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 8; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 9; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
 Backup version 1 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson/progress và speaking
@@ -57,8 +57,11 @@ hoặc thêm Shadow không thuộc baseline này.
 
 Immersion Listening Loop chạy trước Speaking Ladder: First Listen → Check Meaning → Second Listen →
 Sentence Review → Final Re-listen. Session, transcript reveal theo phiên và sentence counters được
-lưu trong SQLite; dashboard có Continue Listening và Re-listen. Audio luyện nghe là Kokoro practice
-audio từ transcript/câu đã lưu, không được trình bày như original YouTube audio.
+lưu trong SQLite; Check Meaning và Sentence Review không có đánh giá theo từng câu. `Save for
+re-listen` là bookmark rõ nghĩa, không phải difficulty rating; dashboard Re-listen chỉ hiện câu đã
+lưu. Các field recognition/difficult cũ được giữ để tương thích nhưng app mới không ghi hoặc hiển
+thị. Audio luyện nghe là Kokoro practice audio từ transcript/câu đã lưu, không được trình bày như
+original YouTube audio.
 
 Tiến độ học được lưu trong SQLite theo stable item UUID. Lật thẻ từ vựng đánh dấu item là `learned`;
 mở tab chỉ ghi `visited` và UI hiển thị “Đã xem”, không xem đó là hoàn thành. Quiz, vocabulary,

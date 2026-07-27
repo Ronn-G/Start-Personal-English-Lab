@@ -1,8 +1,9 @@
 # SQLite Storage Architecture
 
-> Schema v8 adds `listening_sessions` and `listening_item_progress`. Listening commands resolve
-> lesson/source identity server-side, enforce one active session per lesson, validate sequential
-> business steps and complete transactionally. Listening and speaking progress remain independent.
+> Schema v9 adds an indexed `saved_for_relisten` bookmark to the v8 listening tables. Listening
+> commands resolve lesson/source identity server-side, enforce one active session per lesson,
+> validate sequential business steps and update bookmarks transactionally. Recognition/difficulty
+> columns remain legacy compatibility data; listening and speaking progress remain independent.
 
 > Sprint 5 stores WAV files in `<data-directory>/audio-cache`, not SQLite. Schema v5 adds `audio_cache` metadata with generating/ready/failed/stale state, size/config/access/failure fields. Missing ready files are marked stale; cleanup uses last-accessed LRU and a 500 MB default.
 

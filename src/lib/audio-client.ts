@@ -2,6 +2,7 @@ import {
   AUDIO_DEFAULTS,
   AudioQueue,
   canonicalAudioInput,
+  normalizeAudioText,
   rateToKokoroSpeed,
   type AudioPreparationStatus,
   type AudioPreloadItem,
@@ -10,6 +11,23 @@ import {
 const queue = new AudioQueue(1);
 let current: HTMLAudioElement | undefined;
 
+export function buildAudioPreparationRequest(text: string, speed: number) {
+  const normalizedText = normalizeAudioText(text);
+  const config = { ...AUDIO_DEFAULTS, speed };
+  return {
+    key: canonicalAudioInput(normalizedText, config),
+    body: {
+      text: normalizedText,
+      voice: config.voice,
+      speed: config.speed,
+      language: config.language,
+      modelVersion: config.modelVersion,
+      normalizationVersion: config.normalizationVersion,
+      format: config.format,
+    },
+  };
+}
+
 async function prepareAudio(
   text: string,
   priority: number,
@@ -17,10 +35,9 @@ async function prepareAudio(
   speed = 1,
   onStatus?: (status: AudioPreparationStatus) => void,
 ) {
-  const config = { ...AUDIO_DEFAULTS, speed };
-  const key = canonicalAudioInput(text, config);
+  const request = buildAudioPreparationRequest(text, speed);
   return queue.enqueue({
-    key,
+    key: request.key,
     priority,
     lessonId,
     onStatus,
@@ -28,7 +45,7 @@ async function prepareAudio(
       const response = await fetch("/api/audio/prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voice: config.voice, speed: config.speed }),
+        body: JSON.stringify(request.body),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "AUDIO_FAILED");
@@ -55,6 +72,9 @@ export const audioClient = {
           onProgress?.(ready, total, failed);
         })
         .catch((error) => {
+          if (error instanceof Error && error.message === "cancelled") {
+            return;
+          }
           failed++;
           console.warn("Kokoro audio preload failed.", error);
           onProgress?.(ready, total, failed);
@@ -64,8 +84,13 @@ export const audioClient = {
   cancelLesson(id: string) {
     queue.cancelLesson(id);
   },
-  async prepare(text: string, lessonId = "user", rate = 0.86) {
-    return prepareAudio(text, 0, lessonId, rateToKokoroSpeed(rate));
+  async prepare(
+    text: string,
+    lessonId = "user",
+    rate = 0.86,
+    onStatus?: (status: AudioPreparationStatus) => void,
+  ) {
+    return prepareAudio(text, 0, lessonId, rateToKokoroSpeed(rate), onStatus);
   },
   async play(text: string, lessonId = "user", rate = 0.86) {
     const speed = rateToKokoroSpeed(rate);

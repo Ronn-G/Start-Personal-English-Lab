@@ -26,6 +26,11 @@ export async function POST(request: Request) {
     }).prepare(body.text, {
       voice: typeof body.voice === "string" ? body.voice : undefined,
       speed: typeof body.speed === "number" ? body.speed : undefined,
+      language: typeof body.language === "string" ? body.language : undefined,
+      modelVersion: typeof body.modelVersion === "string" ? body.modelVersion : undefined,
+      normalizationVersion:
+        typeof body.normalizationVersion === "number" ? body.normalizationVersion : undefined,
+      format: body.format === "wav" ? body.format : undefined,
     });
     return NextResponse.json(result);
   } catch (error) {

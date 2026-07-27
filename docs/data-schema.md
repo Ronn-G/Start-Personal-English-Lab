@@ -60,7 +60,7 @@ string. SQLite repository áp dụng command bằng read-modify-write transactio
 
 # Immersion Listening Loop tables
 
-The current SQLite schema is **8**; backup, Lesson and Progress remain version **1**.
+The current SQLite schema is **9**; backup, Lesson and Progress remain version **1**.
 
 Schema v8 adds `listening_sessions` and `listening_item_progress`.
 
@@ -74,3 +74,13 @@ Schema v8 adds `listening_sessions` and `listening_item_progress`.
 
 Migration v8 runs in the existing `BEGIN IMMEDIATE` transaction wrapper. It does not rewrite Lesson
 v1, Progress v1, Speaking Ladder rows, audio-cache metadata or existing lesson/progress data.
+
+Schema v9 adds `listening_item_progress.saved_for_relisten`, a boolean bookmark with an index for
+the dashboard Re-listen query. The migration is a transactional `ALTER TABLE` with default `0`; it
+does not infer bookmarks from legacy `difficult` rows and does not rebuild the table.
+
+The current listening UI and service write only objective counters/reveal/timestamps plus the
+explicit bookmark. Existing `recognition_status`, `difficult` and
+`listening_sessions.final_relisten_rating` columns remain for database and backup compatibility but
+are legacy/currently unused. Backup v1 exports `savedForRelisten` as an optional field. Import treats
+its absence in older backups as `false`; merge preserves an explicitly newer bookmark value.

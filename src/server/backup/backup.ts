@@ -97,6 +97,7 @@ export interface ListeningItemProgressBackup {
   transcriptRevealed: boolean;
   recognitionStatus: ListeningRecognitionState;
   difficult: boolean;
+  savedForRelisten?: boolean;
   lastListenedAt?: string;
   updatedAt: string;
 }
@@ -409,6 +410,8 @@ export function validateBackup(value: unknown): {
           progress.recognitionStatus as ListeningRecognitionState,
         ) ||
         typeof progress.difficult !== "boolean" ||
+        (progress.savedForRelisten !== undefined &&
+          typeof progress.savedForRelisten !== "boolean") ||
         (progress.lastListenedAt !== undefined && !iso(progress.lastListenedAt)) ||
         !iso(progress.updatedAt) ||
         progressKeys.has(key)
@@ -561,6 +564,7 @@ export function exportBackup(
       transcriptRevealed: Boolean(row.transcript_revealed),
       recognitionStatus: row.recognition_status as ListeningRecognitionState,
       difficult: Boolean(row.difficult),
+      savedForRelisten: Boolean(row.saved_for_relisten),
       ...(row.last_listened_at ? { lastListenedAt: String(row.last_listened_at) } : {}),
       updatedAt: String(row.updated_at),
     }));
@@ -800,6 +804,8 @@ export function mergeListeningItemProgress(
     transcriptRevealed: current.transcriptRevealed || incoming.transcriptRevealed,
     recognitionStatus,
     difficult: recognitionStatus === "recognized" ? false : newer.difficult,
+    savedForRelisten:
+      newer.savedForRelisten ?? current.savedForRelisten ?? incoming.savedForRelisten ?? false,
     ...(lastListenedAt ? { lastListenedAt } : {}),
     updatedAt:
       Date.parse(current.updatedAt) >= Date.parse(incoming.updatedAt)
@@ -881,6 +887,7 @@ function dbListeningProgress(row: Record<string, unknown>): ListeningItemProgres
     transcriptRevealed: Boolean(row.transcript_revealed),
     recognitionStatus: row.recognition_status as ListeningRecognitionState,
     difficult: Boolean(row.difficult),
+    savedForRelisten: Boolean(row.saved_for_relisten),
     ...(row.last_listened_at ? { lastListenedAt: String(row.last_listened_at) } : {}),
     updatedAt: String(row.updated_at),
   };
@@ -1116,13 +1123,15 @@ export function importBackup(
         .prepare(
           `INSERT INTO listening_item_progress(
             id,lesson_id,source_type,source_item_id,listen_count,loop_count,
-            transcript_revealed,recognition_status,difficult,last_listened_at,updated_at
-          ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            transcript_revealed,recognition_status,difficult,saved_for_relisten,
+            last_listened_at,updated_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(lesson_id,id) DO UPDATE SET
             source_type=excluded.source_type,source_item_id=excluded.source_item_id,
             listen_count=excluded.listen_count,loop_count=excluded.loop_count,
             transcript_revealed=excluded.transcript_revealed,
             recognition_status=excluded.recognition_status,difficult=excluded.difficult,
+            saved_for_relisten=excluded.saved_for_relisten,
             last_listened_at=excluded.last_listened_at,updated_at=excluded.updated_at`,
         )
         .run(
@@ -1135,6 +1144,7 @@ export function importBackup(
           merged.transcriptRevealed ? 1 : 0,
           merged.recognitionStatus,
           merged.difficult ? 1 : 0,
+          merged.savedForRelisten ? 1 : 0,
           merged.lastListenedAt ?? null,
           merged.updatedAt,
         );

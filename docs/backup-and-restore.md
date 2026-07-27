@@ -45,8 +45,11 @@ audio-cache metadata, machine paths and temporary playback state remain excluded
 
 Listening item remap uses source type plus stable source item UUID, then recalculates the listening
 item ID for the target lesson UUID. Invalid or orphan sources are rejected before import. Merge keeps
-maximum counters, never lowers recognition rank, unions aggregate transcript reveal, keeps completed
-sessions completed, and uses the newer record for notes, ratings and the separate difficult flag.
+maximum counters, unions aggregate transcript reveal, keeps completed sessions completed, and uses
+the explicitly newer `savedForRelisten` bookmark when present. The bookmark field is optional:
+older listening backups without it import as not saved. Legacy recognition, difficulty and final
+rating fields remain accepted/exported for compatibility but the current app does not depend on
+them.
 Only one active listening session is retained per lesson; the farther step wins, then the newer
 timestamp. Replace deletes and restores listening rows inside the existing import transaction, so an
 insert or verification failure rolls back lessons, lesson progress, speaking and listening together.

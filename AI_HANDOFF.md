@@ -1,10 +1,11 @@
 # Personal English Lab — AI handoff
 
-Immersion Listening Loop v1 raises SQLite to schema 8. `/api/listening`, `ListeningService` and
+Immersion Listening Loop now uses SQLite schema 9. `/api/listening`, `ListeningService` and
 `ListeningPractice` add resumable First Listen → Check Meaning → Second Listen → Sentence Review →
 Final Re-listen without replacing Speaking Ladder. Listening items derive from stable Lesson v1
-source UUIDs, audio reuses the Kokoro cache/coalescing/fallback, and backup v1 has optional listening
-collections. Run `npm run smoke:listening` with the existing verification suite.
+source UUIDs. Check Meaning and Sentence Review share the visible Kokoro-first audio lifecycle and
+contain no per-sentence assessment. `saved_for_relisten` is an explicit bookmark; backup v1 keeps it
+optional so older listening backups still import. Run `npm run smoke:listening` with the suite.
 
 Personal English Lab `0.1.0` là prototype local-first dùng Next.js App Router, React, TypeScript
 và Node.js 24. Source of truth là repository này; không sửa artifact portable.
@@ -19,7 +20,7 @@ và Node.js 24. Source of truth là repository này; không sửa artifact porta
 - `tools`: local smoke tests và tooling.
 - `test`: Node test suite.
 
-SQLite là nguồn dữ liệu chính. Database schema 7, lesson schema 1, progress schema 1 và backup
+SQLite là nguồn dữ liệu chính. Database schema 9, lesson schema 1, progress schema 1 và backup
 version 1. `localStorage` chỉ dùng cho migration legacy và theme. Không đổi schema, backup format,
 API contract hay persisted data nếu sprint không yêu cầu migration rõ ràng.
 

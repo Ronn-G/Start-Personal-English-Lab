@@ -7,6 +7,7 @@ import LessonDisplay from "@/components/LessonDisplay";
 import LegacyMigrationPanel from "@/components/LegacyMigrationPanel";
 import BackupRestorePanel from "@/components/BackupRestorePanel";
 import ThemeSwitcher from "@/components/ThemeSwitcher";
+import { audioClient } from "@/lib/audio-client";
 import { buildLessonPrompt } from "@/lib/lesson-prompt";
 import { formatLessonDiagnostics, parseLessonText } from "@/lib/lesson-schema";
 import { storageClient } from "@/lib/storage-client";
@@ -39,8 +40,11 @@ interface ListeningDashboardData {
   review: Array<{
     lessonId: string;
     title: string;
-    lastListenedAt: string;
-    difficultCount: number;
+    itemId: string;
+    sourceType: string;
+    sourceItemId: string;
+    text: string;
+    targetPhrase?: string;
   }>;
 }
 
@@ -60,6 +64,12 @@ export default function LessonGenerator() {
   const [openSpeakingOnLoad, setOpenSpeakingOnLoad] = useState(false);
   const [openListeningOnLoad, setOpenListeningOnLoad] = useState(false);
   const [listeningDashboard, setListeningDashboard] = useState<ListeningDashboardData | null>(null);
+  const [relistenAudio, setRelistenAudio] = useState<{
+    itemId: string | null;
+    loading: boolean;
+    error?: string;
+  }>({ itemId: null, loading: false });
+  const [removingRelistenId, setRemovingRelistenId] = useState<string | null>(null);
   const saveInFlight = useRef(false);
 
   const prompt = useMemo(() => buildChatGptPrompt(transcript.trim()), [transcript]);
@@ -78,16 +88,23 @@ export default function LessonGenerator() {
   useEffect(() => {
     void Promise.resolve().then(refreshLibrary);
   }, [refreshLibrary]);
-  useEffect(() => {
-    fetch("/api/listening", {
+  const refreshListeningDashboard = useCallback(async () => {
+    const response = await fetch("/api/listening", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "dashboard" }),
-    })
-      .then((response) => response.json())
-      .then((body) => setListeningDashboard(body as ListeningDashboardData))
+    });
+    const body = (await response.json()) as ListeningDashboardData & { error?: string };
+    if (!response.ok) throw new Error(body.error ?? "Could not load saved listening items.");
+    setListeningDashboard(body);
+    return body;
+  }, []);
+  useEffect(() => {
+    void Promise.resolve()
+      .then(refreshListeningDashboard)
       .catch(() => undefined);
-  }, [activeSavedId]);
+  }, [activeSavedId, refreshListeningDashboard]);
+  useEffect(() => () => audioClient.stop(), []);
 
   async function showLesson(data: GenerateLessonResponse) {
     if (saveInFlight.current) return;
@@ -158,6 +175,8 @@ export default function LessonGenerator() {
     }
   }
   async function practiceListening(preferredLessonId?: string) {
+    audioClient.stop();
+    setRelistenAudio({ itemId: null, loading: false });
     setError(null);
     try {
       const response = await fetch("/api/listening", {
@@ -177,6 +196,49 @@ export default function LessonGenerator() {
       await loadSavedLesson(selected, false, true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not choose a listening lesson.");
+    }
+  }
+
+  async function playSavedSentence(item: ListeningDashboardData["review"][number]) {
+    audioClient.stop();
+    setRelistenAudio({ itemId: item.itemId, loading: true });
+    try {
+      await audioClient.play(item.text, `relisten:${item.lessonId}`);
+      setRelistenAudio({ itemId: item.itemId, loading: false });
+    } catch (reason) {
+      setRelistenAudio({
+        itemId: item.itemId,
+        loading: false,
+        error: reason instanceof Error ? reason.message : "Kokoro audio is unavailable.",
+      });
+    }
+  }
+
+  async function removeSavedSentence(item: ListeningDashboardData["review"][number]) {
+    setRemovingRelistenId(item.itemId);
+    setError(null);
+    try {
+      const response = await fetch("/api/listening", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_saved_for_relisten",
+          lessonId: item.lessonId,
+          itemId: item.itemId,
+          saved: false,
+        }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? "Could not remove the saved sentence.");
+      if (relistenAudio.itemId === item.itemId) {
+        audioClient.stop();
+        setRelistenAudio({ itemId: null, loading: false });
+      }
+      await refreshListeningDashboard();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not remove the saved sentence.");
+    } finally {
+      setRemovingRelistenId(null);
     }
   }
 
@@ -354,33 +416,55 @@ export default function LessonGenerator() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="font-extrabold text-heading">Re-listen</h2>
-                  <p className="text-xs text-muted">
-                    Recent lessons, with difficult sentences first.
-                  </p>
+                  <p className="text-xs text-muted">Sentences you explicitly saved for later.</p>
                 </div>
               </div>
               <div className="mt-3 grid gap-2">
-                {listeningDashboard.review.slice(0, 3).map((item) => (
-                  <div
-                    key={item.lessonId}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-card p-3"
-                  >
-                    <div>
-                      <p className="font-bold text-heading">{item.title}</p>
-                      <p className="text-xs text-muted">
-                        Last listened {new Date(item.lastListenedAt).toLocaleString("vi-VN")}
-                        {item.difficultCount
-                          ? ` · ${item.difficultCount} difficult sentence${item.difficultCount === 1 ? "" : "s"}`
-                          : ""}
-                      </p>
+                {listeningDashboard.review.slice(0, 5).map((item) => (
+                  <div key={item.itemId} className="rounded-xl bg-card p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-muted">{item.title}</p>
+                        <p className="font-bold text-heading">{item.text}</p>
+                        {item.targetPhrase ? (
+                          <p className="text-xs text-muted">Target phrase: {item.targetPhrase}</p>
+                        ) : null}
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void practiceListening(item.lessonId)}
-                      className="rounded-full border-2 border-primary px-3 py-2 text-xs font-extrabold text-primary"
-                    >
-                      Listen again
-                    </button>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={relistenAudio.itemId === item.itemId && relistenAudio.loading}
+                        onClick={() => void playSavedSentence(item)}
+                        className="rounded-full bg-primary px-3 py-2 text-xs font-extrabold text-white disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {relistenAudio.itemId === item.itemId && relistenAudio.loading
+                          ? "Preparing Kokoro..."
+                          : "Play"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void practiceListening(item.lessonId)}
+                        className="rounded-full border-2 border-primary px-3 py-2 text-xs font-extrabold text-primary"
+                      >
+                        Open lesson
+                      </button>
+                      <button
+                        type="button"
+                        disabled={removingRelistenId === item.itemId}
+                        onClick={() => void removeSavedSentence(item)}
+                        className="rounded-full border-2 border-border px-3 py-2 text-xs font-extrabold text-body disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {removingRelistenId === item.itemId
+                          ? "Removing..."
+                          : "Remove from re-listen"}
+                      </button>
+                    </div>
+                    {relistenAudio.itemId === item.itemId && relistenAudio.error ? (
+                      <p role="alert" className="mt-2 text-xs font-bold text-wrong">
+                        Audio failed. Try Play again.
+                      </p>
+                    ) : null}
                   </div>
                 ))}
               </div>

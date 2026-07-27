@@ -1,9 +1,10 @@
 # Personal English Lab - Current Architecture Baseline
 
-> Immersion Listening Loop: SQLite schema v8 adds independent listening sessions and stable-source
-> item progress. `/api/listening` owns Start/Continue/Practice Again, step validation, transcript
-> reveal, monotonic counters, completion and dashboard review. The client reuses the existing audio
-> cache/Kokoro fallback and can open the existing Speaking Ladder with the same source item.
+> Immersion Listening Loop: SQLite schema v9 adds the explicit `saved_for_relisten` bookmark to the
+> v8 listening tables. `/api/listening` owns Start/Continue/Practice Again, step validation,
+> transcript reveal, objective counters, bookmarks, completion and saved-sentence dashboard review.
+> Check Meaning and Sentence Review share one visible Kokoro-first controller and can open Speaking
+> Ladder with the same source item. Legacy recognition/difficulty fields are no longer written.
 
 > Sprint 6: Guided Speaking Ladder derives practice locally from saved lessons. `/api/speaking` owns persisted Start/Continue/Practice Again, daily selection, difficult-item review, ranked progress updates, and resumable sessions. Lesson generation and its prompt are unchanged.
 

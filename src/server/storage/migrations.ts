@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 8;
+export const CURRENT_DATABASE_VERSION = 9;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -277,6 +277,20 @@ export const MIGRATIONS: readonly Migration[] = [
 
         CREATE INDEX listening_item_review_idx
           ON listening_item_progress(difficult DESC, last_listened_at ASC);
+      `);
+    },
+  },
+  {
+    version: 9,
+    name: "saved_listening_items",
+    up(database) {
+      database.exec(`
+        ALTER TABLE listening_item_progress
+          ADD COLUMN saved_for_relisten INTEGER NOT NULL DEFAULT 0
+          CHECK(saved_for_relisten IN (0,1));
+
+        CREATE INDEX listening_item_saved_idx
+          ON listening_item_progress(saved_for_relisten, updated_at DESC);
       `);
     },
   },

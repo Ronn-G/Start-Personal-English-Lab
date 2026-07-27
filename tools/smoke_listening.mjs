@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -174,6 +174,28 @@ async function prepareAudio(item) {
 }
 
 try {
+  const listeningUi = await readFile(resolve("src", "components", "ListeningPractice.tsx"), "utf8");
+  if (
+    /I can hear it now|I could hear it|understood it after reading|understand it after reading|Still difficult|mark_recognized|mark_difficult|mark_understood_after_reading/i.test(
+      listeningUi,
+    )
+  ) {
+    throw new Error("Listening assessment controls are still present.");
+  }
+  for (const label of [
+    "Play",
+    "Loop 3",
+    "Loop 5",
+    "Stop",
+    "Reveal sentence",
+    "Practice this sentence",
+    "Save for re-listen",
+    "Using browser voice",
+    "Retry Kokoro",
+  ]) {
+    if (!listeningUi.includes(label)) throw new Error(`Listening UI is missing ${label}.`);
+  }
+
   let health;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
@@ -188,7 +210,7 @@ try {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   }
   if (!health) throw new Error(`Standalone server failed. ${stderr}`.trim());
-  if (health.schemaVersion !== 8) throw new Error("Listening schema is not v8.");
+  if (health.schemaVersion !== 9) throw new Error("Listening schema is not v9.");
 
   for (const currentLesson of [lesson, otherLesson]) {
     const response = await fetch(`${baseUrl}/api/storage/lessons`, {
@@ -261,13 +283,16 @@ try {
   state = await postListening("reveal_item", { sessionId, itemId });
   state = await postListening("record_listen", { sessionId, itemId });
   state = await postListening("record_loop", { sessionId, itemId, count: 3 });
-  state = await postListening("mark_difficult", { sessionId, itemId });
+  state = await postListening("set_saved_for_relisten", {
+    itemId,
+    saved: true,
+  });
   const itemProgress = state.items.find((item) => item.id === itemId)?.progress;
   if (
     !itemProgress ||
     itemProgress.listenCount !== 4 ||
     itemProgress.loopCount !== 3 ||
-    !itemProgress.difficult
+    !itemProgress.savedForRelisten
   ) {
     throw new Error("Listening item progress did not persist.");
   }
@@ -350,10 +375,13 @@ try {
     throw new Error("Second Listen did not persist.");
   }
   for (const item of sourceItems) {
-    state = await postListening("mark_recognized", { sessionId, itemId: item.id });
-    state = await postListening("mark_difficult", { sessionId, itemId: item.id });
+    state = await postListening("record_listen", { sessionId, itemId: item.id });
+    state = await postListening("set_saved_for_relisten", {
+      itemId: item.id,
+      saved: true,
+    });
     const progress = state.items.find((candidate) => candidate.id === item.id)?.progress;
-    if (!progress || progress.recognitionStatus !== "recognized" || !progress.difficult) {
+    if (!progress || !progress.savedForRelisten || progress.listenCount < 1) {
       throw new Error(`Independent progress failed for ${item.sourceType}.`);
     }
   }
@@ -363,7 +391,6 @@ try {
   });
   state = await postListening("complete", {
     sessionId,
-    rating: "easier",
     note: "The familiar phrases were clearer.",
   });
   if (state.session.status !== "completed" || state.session.currentStep !== "complete") {
@@ -390,7 +417,7 @@ try {
     reloaded.session.secondListenComprehension !== "main_idea" ||
     sourceItems.some((item) => {
       const progress = reloaded.items.find((candidate) => candidate.id === item.id)?.progress;
-      return !progress || progress.recognitionStatus !== "recognized" || !progress.difficult;
+      return !progress || !progress.savedForRelisten;
     })
   ) {
     throw new Error("Listening reload persistence failed.");
@@ -401,11 +428,39 @@ try {
     body: JSON.stringify({ action: "dashboard" }),
   }).then((response) => response.json());
   if (
-    !dashboard.review.some(
-      (entry) => entry.lessonId === lesson.id && entry.difficultCount === sourceItems.length,
+    dashboard.review.length !== sourceItems.length ||
+    dashboard.review.some(
+      (entry) =>
+        entry.lessonId !== lesson.id ||
+        !sourceItems.some((item) => item.id === entry.itemId && item.text === entry.text),
     )
   ) {
-    throw new Error("Difficult listening items did not appear in Re-listen review.");
+    throw new Error("Saved listening items did not appear in Re-listen.");
+  }
+  const removedItem = sourceItems[0];
+  state = await postListening("set_saved_for_relisten", {
+    itemId: removedItem.id,
+    saved: false,
+  });
+  const removedProgress = state.items.find((item) => item.id === removedItem.id)?.progress;
+  if (
+    !removedProgress ||
+    removedProgress.savedForRelisten ||
+    removedProgress.listenCount !==
+      reloaded.items.find((item) => item.id === removedItem.id)?.progress.listenCount
+  ) {
+    throw new Error("Removing a Re-listen bookmark changed objective counters.");
+  }
+  const dashboardAfterRemove = await fetch(`${baseUrl}/api/listening`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "dashboard" }),
+  }).then((response) => response.json());
+  if (
+    dashboardAfterRemove.review.length !== sourceItems.length - 1 ||
+    dashboardAfterRemove.review.some((entry) => entry.itemId === removedItem.id)
+  ) {
+    throw new Error("Removing one Re-listen bookmark updated the wrong item.");
   }
   const otherStatus = await fetch(`${baseUrl}/api/listening`, {
     method: "POST",
@@ -418,6 +473,8 @@ try {
   if (
     backup.listeningSessions.length !== 1 ||
     backup.listeningItemProgress.length !== sourceItems.length ||
+    backup.listeningItemProgress.filter((item) => item.savedForRelisten).length !==
+      sourceItems.length - 1 ||
     "audioCache" in backup
   ) {
     throw new Error("Listening backup export failed.");
@@ -442,7 +499,8 @@ try {
         kokoroSourceTypesReady: sourceTypes,
         kokoroRequests: kokoroRequests.length,
         duplicateAudioCoalesced: true,
-        difficultReviewCount: sourceItems.length,
+        savedRelistenCount: sourceItems.length - 1,
+        assessmentControlsRemoved: true,
         speakingSourceLinked: true,
         backupListeningSessions: backup.listeningSessions.length,
         backupListeningItems: backup.listeningItemProgress.length,

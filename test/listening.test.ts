@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
+import { buildAudioPreparationRequest } from "../src/lib/audio-client";
 import {
   assertListeningTransition,
   extractListeningItems,
@@ -151,8 +152,7 @@ interface TestListeningResponse {
       listenCount: number;
       loopCount: number;
       transcriptRevealed: boolean;
-      recognitionStatus: string;
-      difficult: boolean;
+      savedForRelisten: boolean;
     };
   }>;
 }
@@ -187,11 +187,27 @@ test("listening comprehension ranks and stable item IDs are strict and determini
   );
 });
 
-test("schema v7 migrates to v8 without losing lessons and rolls back a failed v8 migration", () => {
-  const database = databaseAt(7);
+test("schema v8 migrates to v9 without losing legacy listening data and rolls back", () => {
+  const database = databaseAt(8);
   const lesson = fixtureLesson();
   insertLesson(database, lesson);
-  assert.equal(runMigrations(database), 8);
+  const item = extractListeningItems(lesson)[0];
+  database
+    .prepare(
+      `INSERT INTO listening_item_progress(
+        id,lesson_id,source_type,source_item_id,listen_count,loop_count,
+        transcript_revealed,recognition_status,difficult,last_listened_at,updated_at
+      ) VALUES(?,?,?,?,2,1,1,'recognized',1,?,?)`,
+    )
+    .run(
+      item.id,
+      lesson.id,
+      item.sourceType,
+      item.sourceItemId,
+      lesson.updatedAt,
+      lesson.updatedAt,
+    );
+  assert.equal(runMigrations(database), 9);
   assert.equal(
     (
       database.prepare("SELECT title FROM lessons WHERE id=?").get(lesson.id) as {
@@ -206,27 +222,41 @@ test("schema v7 migrates to v8 without losing lessons and rolls back a failed v8
         user_version: number;
       }
     ).user_version,
-    8,
+    9,
   );
-  assert.ok(
-    database
-      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='listening_sessions'")
-      .get(),
+  assert.equal(
+    (
+      database
+        .prepare(
+          "SELECT recognition_status,difficult,saved_for_relisten FROM listening_item_progress WHERE id=?",
+        )
+        .get(item.id) as {
+        recognition_status: string;
+        difficult: number;
+        saved_for_relisten: number;
+      }
+    ).saved_for_relisten,
+    0,
   );
+  const legacy = database
+    .prepare("SELECT recognition_status,difficult FROM listening_item_progress WHERE id=?")
+    .get(item.id) as { recognition_status: string; difficult: number };
+  assert.equal(legacy.recognition_status, "recognized");
+  assert.equal(legacy.difficult, 1);
   database.close();
 
-  const failing = databaseAt(7);
+  const failing = databaseAt(8);
   const brokenMigration: Migration = {
-    version: 8,
-    name: "broken_listening",
+    version: 9,
+    name: "broken_saved_listening",
     up(db) {
       db.exec("CREATE TABLE should_rollback(id TEXT PRIMARY KEY) STRICT");
       throw new Error("intentional failure");
     },
   };
   assert.throws(
-    () => runMigrations(failing, [...MIGRATIONS.slice(0, 7), brokenMigration]),
-    /broken_listening/,
+    () => runMigrations(failing, [...MIGRATIONS.slice(0, 8), brokenMigration]),
+    /broken_saved_listening/,
   );
   assert.equal(
     (
@@ -234,7 +264,7 @@ test("schema v7 migrates to v8 without losing lessons and rolls back a failed v8
         user_version: number;
       }
     ).user_version,
-    7,
+    8,
   );
   assert.equal(
     failing
@@ -331,21 +361,20 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
   });
   assert.equal(state.items[0].progress.listenCount, 4);
   assert.equal(state.items[0].progress.loopCount, 3);
+  const legacyAfterListening = database
+    .prepare(
+      "SELECT recognition_status,difficult FROM listening_item_progress WHERE lesson_id=? AND id=?",
+    )
+    .get(lesson.id, item.id) as { recognition_status: string; difficult: number };
+  assert.equal(legacyAfterListening.recognition_status, "not_started");
+  assert.equal(legacyAfterListening.difficult, 0);
   state = execute(service, {
-    action: "mark_difficult",
+    action: "set_saved_for_relisten",
     lessonId: lesson.id,
-    sessionId,
     itemId: item.id,
+    saved: true,
   });
-  assert.equal(state.items[0].progress.difficult, true);
-  state = execute(service, {
-    action: "mark_recognized",
-    lessonId: lesson.id,
-    sessionId,
-    itemId: item.id,
-  });
-  assert.equal(state.items[0].progress.recognitionStatus, "recognized");
-  assert.equal(state.items[0].progress.difficult, true);
+  assert.equal(state.items[0].progress.savedForRelisten, true);
   assert.equal(state.items[0].progress.listenCount, 4);
   assert.equal(state.items[0].progress.loopCount, 3);
 
@@ -385,7 +414,6 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
         action: "complete",
         lessonId: lesson.id,
         sessionId,
-        rating: "easier",
       }),
     /forced rollback/,
   );
@@ -402,7 +430,6 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     action: "complete",
     lessonId: lesson.id,
     sessionId,
-    rating: "easier",
     note: "Familiar phrases were clearer.",
   });
   assert.equal(state.session?.status, "completed");
@@ -417,19 +444,22 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     /đã kết thúc/,
   );
 
-  assert.throws(() =>
-    execute(service, {
-      action: "mark_difficult",
-      lessonId: lesson.id,
-      sessionId,
-      itemId: item.id,
-    }),
+  assert.throws(
+    () =>
+      execute(service, {
+        action: "mark_difficult",
+        lessonId: lesson.id,
+        sessionId,
+        itemId: item.id,
+      }),
+    /không được hỗ trợ/,
   );
 
   const again = execute(service, { action: "practice_again", lessonId: lesson.id });
   assert.notEqual(again.session?.id, sessionId);
   assert.equal(again.session?.currentStep, "first_listen");
   assert.equal(again.items[0].progress.listenCount, 4);
+  assert.equal(again.items[0].progress.savedForRelisten, true);
   assert.equal(
     (
       database
@@ -464,14 +494,15 @@ test("listening backup is optional, merges without lowering state, remaps confli
     count: 3,
   });
   state = execute(service, {
-    action: "mark_difficult",
+    action: "set_saved_for_relisten",
     lessonId: lesson.id,
-    sessionId,
     itemId: item.id,
+    saved: true,
   });
   const backup = exportBackup(source, "0.1.0");
   assert.equal(backup.listeningSessions?.length, 1);
   assert.equal(backup.listeningItemProgress?.length, 1);
+  assert.equal(backup.listeningItemProgress?.[0].savedForRelisten, true);
   assert.equal(validateBackup(backup).diagnostics.length, 0);
 
   const legacyPayload = {
@@ -494,12 +525,43 @@ test("listening backup is optional, merges without lowering state, remaps confli
   } as BackupDocument;
   assert.equal(validateBackup(legacy).diagnostics.length, 0);
 
+  const currentPayload = Object.fromEntries(
+    Object.entries(backup).filter(([key]) => key !== "integrity"),
+  ) as Omit<BackupDocument, "integrity">;
+  const oldListeningProgress: ListeningItemProgressBackup = {
+    ...backup.listeningItemProgress![0],
+  };
+  delete oldListeningProgress.savedForRelisten;
+  const oldListeningPayload = {
+    ...currentPayload,
+    listeningItemProgress: [oldListeningProgress],
+  };
+  const oldListeningBackup = {
+    ...oldListeningPayload,
+    integrity: {
+      algorithm: "SHA-256" as const,
+      checksum: checksum(oldListeningPayload),
+    },
+  } as BackupDocument;
+  assert.equal(validateBackup(oldListeningBackup).diagnostics.length, 0);
+  const oldListeningTarget = databaseAt();
+  importBackup(oldListeningTarget, oldListeningBackup, "merge");
+  assert.equal(
+    (
+      oldListeningTarget
+        .prepare("SELECT saved_for_relisten FROM listening_item_progress")
+        .get() as { saved_for_relisten: number }
+    ).saved_for_relisten,
+    0,
+  );
+
   const currentProgress: ListeningItemProgressBackup = {
     ...backup.listeningItemProgress![0],
     listenCount: 9,
     loopCount: 5,
     recognitionStatus: "recognized",
     difficult: false,
+    savedForRelisten: false,
     updatedAt: new Date(Date.parse(backup.exportedAt) + 10_000).toISOString(),
   };
   const mergedProgress = mergeListeningItemProgress(
@@ -510,6 +572,7 @@ test("listening backup is optional, merges without lowering state, remaps confli
   assert.equal(mergedProgress.loopCount, 5);
   assert.equal(mergedProgress.recognitionStatus, "recognized");
   assert.equal(mergedProgress.difficult, false);
+  assert.equal(mergedProgress.savedForRelisten, false);
 
   const completedSession: ListeningSessionBackup = {
     ...backup.listeningSessions![0],
@@ -527,11 +590,12 @@ test("listening backup is optional, merges without lowering state, remaps confli
   insertLesson(conflictTarget, conflictingLesson);
   importBackup(conflictTarget, backup, "merge");
   const importedListening = conflictTarget
-    .prepare("SELECT lesson_id,source_item_id FROM listening_item_progress")
-    .all() as Array<{ lesson_id: string; source_item_id: string }>;
+    .prepare("SELECT lesson_id,source_item_id,saved_for_relisten FROM listening_item_progress")
+    .all() as Array<{ lesson_id: string; source_item_id: string; saved_for_relisten: number }>;
   assert.equal(importedListening.length, 1);
   assert.notEqual(importedListening[0].lesson_id, lesson.id);
   assert.equal(importedListening[0].source_item_id, item.sourceItemId);
+  assert.equal(importedListening[0].saved_for_relisten, 1);
 
   const replaceTarget = databaseAt();
   const retainedLesson = fixtureLesson("Retained after rollback");
@@ -547,14 +611,17 @@ test("listening backup is optional, merges without lowering state, remaps confli
   assert.ok(replaceTarget.prepare("SELECT 1 FROM lessons WHERE id=?").get(retainedLesson.id));
 
   source.close();
+  oldListeningTarget.close();
   conflictTarget.close();
   replaceTarget.close();
 });
 
-test("listening actions persist independently for all four source types and roll back on failure", () => {
+test("re-listen bookmarks persist independently for all source types and roll back", () => {
   const database = databaseAt();
   const lesson = fixtureLesson();
+  const otherLesson = fixtureLesson("Bookmark isolation");
   insertLesson(database, lesson);
+  insertLesson(database, otherLesson);
   const service = new ListeningService(database);
   let state = execute(service, { action: "start", lessonId: lesson.id });
   const sessionId = state.session!.id;
@@ -579,33 +646,57 @@ test("listening actions persist independently for all four source types and roll
       sessionId,
       itemId: item.id,
     });
-    execute(service, {
-      action: "mark_recognized",
-      lessonId: lesson.id,
-      sessionId,
-      itemId: item.id,
-    });
     state = execute(service, {
-      action: "mark_difficult",
+      action: "set_saved_for_relisten",
       lessonId: lesson.id,
-      sessionId,
       itemId: item.id,
+      saved: true,
     });
     const saved = state.items.find((candidate) => candidate.id === item.id)!.progress;
     assert.equal(saved.listenCount, 1);
-    assert.equal(saved.recognitionStatus, "recognized");
-    assert.equal(saved.difficult, true);
+    assert.equal(saved.loopCount, 0);
+    assert.equal(saved.savedForRelisten, true);
   }
 
   const reloaded = execute(service, { action: "status", lessonId: lesson.id });
   for (const item of selected) {
     const saved = reloaded.items.find((candidate) => candidate.id === item.id)!.progress;
     assert.equal(saved.listenCount, 1);
-    assert.equal(saved.recognitionStatus, "recognized");
-    assert.equal(saved.difficult, true);
+    assert.equal(saved.savedForRelisten, true);
   }
 
-  const rollbackItem = selected[0];
+  const dashboard = service.execute({ action: "dashboard" }) as {
+    review: Array<{ lessonId: string; itemId: string }>;
+  };
+  assert.equal(dashboard.review.length, selected.length);
+  assert.ok(dashboard.review.every((entry) => entry.lessonId === lesson.id));
+  assert.deepEqual(
+    new Set(dashboard.review.map((entry) => entry.itemId)),
+    new Set(selected.map((item) => item.id)),
+  );
+
+  assert.throws(
+    () =>
+      execute(service, {
+        action: "set_saved_for_relisten",
+        lessonId: otherLesson.id,
+        itemId: selected[0].id,
+        saved: true,
+      }),
+    /không thuộc bài học/,
+  );
+
+  state = execute(service, {
+    action: "set_saved_for_relisten",
+    lessonId: lesson.id,
+    itemId: selected[0].id,
+    saved: false,
+  });
+  const removed = state.items.find((candidate) => candidate.id === selected[0].id)!.progress;
+  assert.equal(removed.savedForRelisten, false);
+  assert.equal(removed.listenCount, 1);
+
+  const rollbackItem = selected[1];
   database.exec(`
     CREATE TRIGGER fail_listening_item_action
     BEFORE UPDATE ON listening_item_progress
@@ -617,10 +708,10 @@ test("listening actions persist independently for all four source types and roll
   assert.throws(
     () =>
       execute(service, {
-        action: "mark_recognized",
+        action: "set_saved_for_relisten",
         lessonId: lesson.id,
-        sessionId,
         itemId: rollbackItem.id,
+        saved: false,
       }),
     /forced item action rollback/,
   );
@@ -628,8 +719,8 @@ test("listening actions persist independently for all four source types and roll
     (candidate) => candidate.id === rollbackItem.id,
   )!.progress;
   assert.equal(afterRollback.listenCount, 1);
-  assert.equal(afterRollback.recognitionStatus, "recognized");
-  assert.equal(afterRollback.difficult, true);
+  assert.equal(afterRollback.savedForRelisten, true);
+  assert.equal(execute(service, { action: "status", lessonId: otherLesson.id }).session, null);
   database.close();
 });
 
@@ -689,31 +780,55 @@ test("extractListeningItems validates source identity and produces a bounded pra
   assert.equal(new Set(review.map((item) => item.id)).size, review.length);
 });
 
-test("listening UI exposes hidden transcript, loop controls, resume entries, and practice again", () => {
+test("Check Meaning and Sentence Review use the same canonical audio request", () => {
+  const checkMeaningRequest = buildAudioPreparationRequest(
+    "  Small   habits make listening feel natural. ",
+    1,
+  );
+  const sentenceReviewRequest = buildAudioPreparationRequest(
+    "Small habits make listening feel natural.",
+    1,
+  );
+  assert.deepEqual(checkMeaningRequest, sentenceReviewRequest);
+  assert.equal(checkMeaningRequest.body.text, "Small habits make listening feel natural.");
+  assert.equal(checkMeaningRequest.body.voice, "af_sarah");
+  assert.equal(checkMeaningRequest.body.language, "en-us");
+  assert.equal(checkMeaningRequest.body.modelVersion, "kokoro-v1.0");
+});
+
+test("listening UI removes sentence assessments and keeps objective practice actions", () => {
   const listeningUi = readFileSync("src/components/ListeningPractice.tsx", "utf8");
   const lessonUi = readFileSync("src/components/LessonDisplay.tsx", "utf8");
   const dashboardUi = readFileSync("src/components/LessonGenerator.tsx", "utf8");
   assert.match(listeningUi, /Transcript hidden/);
-  assert.match(listeningUi, /Reveal transcript/);
+  assert.match(listeningUi, /Reveal sentence/);
   assert.match(listeningUi, /How much did you understand/);
+  assert.match(listeningUi, /: "Play"/);
   assert.match(listeningUi, /Loop 3/);
   assert.match(listeningUi, /Loop 5/);
-  assert.match(listeningUi, /Stop loop/);
+  assert.match(listeningUi, />\s*Stop\s*</);
   assert.match(listeningUi, /Audio First review/);
   assert.match(listeningUi, /Preparing Kokoro audio/);
   assert.match(listeningUi, /Kokoro audio ready/);
   assert.match(listeningUi, /Using browser voice/);
   assert.match(listeningUi, /Audio failed/);
   assert.match(listeningUi, /Retry Kokoro/);
-  assert.match(listeningUi, /aria-pressed=\{recognized\}/);
-  assert.match(listeningUi, /aria-pressed=\{difficult\}/);
-  assert.match(listeningUi, /savingAction === "mark_recognized"/);
-  assert.match(listeningUi, /savingAction === "mark_difficult"/);
-  assert.match(listeningUi, /Progress was not saved/);
-  assert.match(listeningUi, /Heard clearly \(selected\)/);
-  assert.match(listeningUi, /Marked difficult \(selected\)/);
+  assert.equal((listeningUi.match(/<ListeningAudioControls/g) ?? []).length, 2);
+  assert.match(listeningUi, /Practice this sentence/);
+  assert.match(listeningUi, /Save for re-listen/);
+  assert.match(listeningUi, /Remove from re-listen/);
+  assert.match(listeningUi, /aria-pressed=\{item\.progress\.savedForRelisten\}/);
+  assert.doesNotMatch(
+    listeningUi,
+    /I can hear it now|I could hear it|understood it after reading|understand it after reading|Heard clearly|Still difficult|Marked difficult/i,
+  );
+  assert.doesNotMatch(listeningUi, /mark_recognized|mark_difficult|mark_understood_after_reading/);
   assert.match(listeningUi, /Practice Again/);
   assert.match(lessonUi, /Continue Listening Practice/);
   assert.match(dashboardUi, /Continue Listening/);
   assert.match(dashboardUi, /Re-listen/);
+  assert.match(dashboardUi, /Sentences you explicitly saved for later/);
+  assert.match(dashboardUi, /Open lesson/);
+  assert.match(dashboardUi, /Remove from re-listen/);
+  assert.doesNotMatch(dashboardUi, /difficult sentence/i);
 });
