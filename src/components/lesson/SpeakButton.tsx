@@ -1,80 +1,89 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { audioClient } from "@/lib/audio-client";
+import { useId } from "react";
+
+import { useAppAudio } from "@/hooks/useAppAudio";
+import type { AudioSourceType } from "@/lib/audio-domain";
 
 interface SpeakButtonProps {
   text: string;
   label?: string;
   rate?: number;
+  lessonId?: string;
+  itemId?: string;
+  sourceType?: AudioSourceType;
 }
 
-type AudioSource = "kokoro" | "browser" | undefined;
+export default function SpeakButton({
+  text,
+  label = "Nghe",
+  rate = 0.86,
+  lessonId = "user",
+  itemId,
+  sourceType = "example",
+}: SpeakButtonProps) {
+  const generatedId = useId();
+  const audioId = itemId ?? `${sourceType}:${generatedId}`;
+  const playback = useAppAudio(`${lessonId}:${generatedId}`);
+  const status = playback.audioStatus(audioId);
+  const active = playback.state.itemId === audioId;
 
-export default function SpeakButton({ text, label = "Nghe", rate = 0.86 }: SpeakButtonProps) {
-  const [loading, setLoading] = useState(false);
-  const [source, setSource] = useState<AudioSource>();
-  const activeRef = useRef(true);
-
-  useEffect(() => {
-    return () => {
-      activeRef.current = false;
-    };
-  }, []);
-
-  async function speak(event: React.MouseEvent<HTMLButtonElement>) {
+  function handlePlay(event: React.MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
-    if (!text.trim() || loading) return;
-
-    setLoading(true);
-    setSource(undefined);
-
-    try {
-      activeRef.current = true;
-      await audioClient.play(text, "user", rate);
-      if (activeRef.current) setSource("kokoro");
-    } catch (error) {
-      if (!activeRef.current) return;
-      console.warn("Kokoro playback failed; using browser voice fallback.", error);
-      if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = "en-US";
-        utterance.rate = rate;
-        const voice = window.speechSynthesis.getVoices().find((item) => item.lang.startsWith("en"));
-        if (voice) utterance.voice = voice;
-        window.speechSynthesis.speak(utterance);
-        setSource("browser");
-      }
-    } finally {
-      setLoading(false);
+    if (!text.trim()) return;
+    if (active && (playback.state.playing || playback.state.loading)) {
+      playback.stop();
+      return;
     }
+    void playback.play(audioId, text, 1, rate, true, sourceType);
   }
 
-  const title =
-    source === "browser"
-      ? "Kokoro chưa sẵn sàng. Đang dùng giọng trình duyệt."
-      : source === "kokoro"
-        ? "Nguồn âm thanh: Kokoro local"
-        : `${label}: ${text}`;
+  function handleRetry(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    void playback.retryKokoro(audioId, text, rate, sourceType);
+  }
+
+  const visibleStatus =
+    status.status === "preparing"
+      ? "Preparing Kokoro audio"
+      : status.status === "retrying"
+        ? "Retrying Kokoro"
+        : status.status === "ready"
+          ? "Kokoro audio ready"
+          : status.status === "browser"
+            ? "Using browser voice"
+            : status.status === "failed"
+              ? "Audio failed"
+              : null;
 
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       <button
         type="button"
-        onClick={speak}
-        disabled={loading}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 border-border bg-card px-3 py-1.5 text-xs font-extrabold text-primary shadow-sm transition ease-smooth hover:border-primary hover:bg-white disabled:cursor-wait disabled:opacity-70"
-        aria-label={`${label}: ${text}`}
-        title={title}
+        onClick={handlePlay}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 border-border bg-card px-3 py-1.5 text-xs font-extrabold text-primary shadow-sm transition ease-smooth hover:border-primary hover:bg-white focus:outline-2 focus:outline-offset-2"
+        aria-label={`${active && (playback.state.playing || playback.state.loading) ? "Stop" : label}: ${text}`}
       >
         <span aria-hidden="true">🔊</span>
-        {loading ? "Đang chuẩn bị..." : label}
+        {active && playback.state.loading
+          ? "Preparing..."
+          : active && playback.state.playing
+            ? "Stop"
+            : label}
       </button>
-      {source ? (
+      {visibleStatus ? (
         <span className="text-[11px] text-muted" role="status">
-          {source === "kokoro" ? "Kokoro local" : "Browser voice fallback"}
+          {visibleStatus}
         </span>
+      ) : null}
+      {(status.status === "failed" || status.status === "browser") && status.retryable !== false ? (
+        <button
+          type="button"
+          onClick={handleRetry}
+          className="text-xs font-bold text-primary underline focus:outline-2 focus:outline-offset-2"
+        >
+          Retry Kokoro
+        </button>
       ) : null}
     </span>
   );

@@ -60,7 +60,7 @@ string. SQLite repository áp dụng command bằng read-modify-write transactio
 
 # Immersion Listening Loop tables
 
-The current SQLite schema is **9**; backup, Lesson and Progress remain version **1**.
+The current SQLite schema is **10**; backup, Lesson and Progress remain version **1**.
 
 Schema v8 adds `listening_sessions` and `listening_item_progress`.
 
@@ -78,6 +78,11 @@ v1, Progress v1, Speaking Ladder rows, audio-cache metadata or existing lesson/p
 Schema v9 adds `listening_item_progress.saved_for_relisten`, a boolean bookmark with an index for
 the dashboard Re-listen query. The migration is a transactional `ALTER TABLE` with default `0`; it
 does not infer bookmarks from legacy `difficult` rows and does not rebuild the table.
+
+Schema v10 adds nullable `retryable`, `last_attempt_at`, `next_retry_at` and `error_summary` fields
+plus a retry index to the existing `audio_cache` table. It retains all cache rows and WAV files.
+Legacy failed rows become retryable Kokoro-unavailable entries; backup remains version 1 and still
+excludes operational audio metadata.
 
 The current listening UI and service write only objective counters/reveal/timestamps plus the
 explicit bookmark. Existing `recognition_status`, `difficult` and

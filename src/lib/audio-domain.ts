@@ -18,13 +18,43 @@ export interface AudioConfig {
   format: "wav";
 }
 
-export type AudioPreparationStatus = "queued" | "generating" | "ready" | "failed" | "cancelled";
+export type AudioErrorCode =
+  | "INVALID_AUDIO_REQUEST"
+  | "KOKORO_UNAVAILABLE"
+  | "KOKORO_TIMEOUT"
+  | "KOKORO_INVALID_RESPONSE"
+  | "KOKORO_INVALID_WAV"
+  | "AUDIO_REQUEST_CANCELLED"
+  | "AUDIO_RETRY_COOLDOWN"
+  | "AUDIO_RETRY_REQUIRED"
+  | "AUDIO_STORAGE_FAILED"
+  | "AUDIO_PLAYBACK_FAILED";
+
+export type AudioRetryMode = "preload" | "automatic" | "manual";
+
+export type AudioPreparationStatus =
+  "queued" | "generating" | "retrying" | "ready" | "failed" | "cancelled";
+
+export type AudioSourceType =
+  | "vocabulary"
+  | "idiom"
+  | "grammar"
+  | "example"
+  | "shadowing"
+  | "sentence-mining"
+  | "listening"
+  | "speaking"
+  | "relisten";
+
+export interface CanonicalAudioRequest extends AudioConfig {
+  text: string;
+}
 
 export interface AudioPreloadItem {
   lessonId: string;
   itemId: string;
   text: string;
-  sourceType: "shadowing" | "example" | "sentence-mining" | "vocabulary";
+  sourceType: AudioSourceType;
   priority: number;
   config: AudioConfig;
 }
@@ -35,6 +65,35 @@ export function normalizeAudioText(text: string): string {
 
 export function rateToKokoroSpeed(rate: number): number {
   return Math.min(Math.max(rate / 0.86, 0.65), 1.35);
+}
+
+export function resolveAudioConfig(partial: Partial<AudioConfig> = {}): AudioConfig {
+  return {
+    voice: partial.voice?.trim() || AUDIO_DEFAULTS.voice,
+    speed:
+      typeof partial.speed === "number" && Number.isFinite(partial.speed)
+        ? partial.speed
+        : AUDIO_DEFAULTS.speed,
+    language: partial.language?.trim() || AUDIO_DEFAULTS.language,
+    modelVersion: partial.modelVersion?.trim() || AUDIO_DEFAULTS.modelVersion,
+    normalizationVersion:
+      typeof partial.normalizationVersion === "number" &&
+      Number.isInteger(partial.normalizationVersion)
+        ? partial.normalizationVersion
+        : AUDIO_DEFAULTS.normalizationVersion,
+    format: partial.format === "wav" ? partial.format : AUDIO_DEFAULTS.format,
+  };
+}
+
+export function buildCanonicalAudioRequest(
+  text: string,
+  partial: Partial<AudioConfig> = {},
+): CanonicalAudioRequest {
+  const normalized = normalizeAudioText(text);
+  if (!normalized || normalized.length > 650) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  return { text: normalized, ...resolveAudioConfig(partial) };
 }
 
 export function canonicalAudioInput(text: string, config: AudioConfig): string {
@@ -49,6 +108,17 @@ format=${config.format}`;
 
 export function canUseBrowserFallback(status: AudioPreparationStatus): boolean {
   return status === "failed";
+}
+
+export function canFallbackFromAudioError(code: AudioErrorCode): boolean {
+  return [
+    "KOKORO_UNAVAILABLE",
+    "KOKORO_TIMEOUT",
+    "KOKORO_INVALID_RESPONSE",
+    "KOKORO_INVALID_WAV",
+    "AUDIO_RETRY_COOLDOWN",
+    "AUDIO_RETRY_REQUIRED",
+  ].includes(code);
 }
 
 export function selectLessonAudioPreloadItems(lesson: Lesson, limit = 15): AudioPreloadItem[] {
@@ -107,7 +177,8 @@ export interface QueueJob {
   lessonId: string;
   status: AudioPreparationStatus;
   queuedAt: number;
-  listeners: Set<(status: AudioPreparationStatus) => void>;
+  listeners: Map<(status: AudioPreparationStatus) => void, string>;
+  lessonIds: Set<string>;
 }
 
 type InternalQueueJob = QueueJob & {
@@ -123,21 +194,22 @@ export class AudioQueue {
   constructor(private concurrency = 1) {}
 
   enqueue(
-    job: Omit<QueueJob, "status" | "queuedAt" | "listeners"> & {
+    job: Omit<QueueJob, "status" | "queuedAt" | "listeners" | "lessonIds"> & {
       onStatus?: (status: AudioPreparationStatus) => void;
     },
   ): Promise<string> {
     const old = this.jobs.get(job.key);
     if (old && job.priority < old.priority) old.priority = job.priority;
+    if (old) old.lessonIds.add(job.lessonId);
     if (old && job.onStatus) {
-      old.listeners.add(job.onStatus);
+      old.listeners.set(job.onStatus, job.lessonId);
       job.onStatus(old.status);
     }
     const waiting = this.waiters.get(job.key);
     if (waiting) return waiting;
 
-    const listeners = new Set<(status: AudioPreparationStatus) => void>();
-    if (job.onStatus) listeners.add(job.onStatus);
+    const listeners = new Map<(status: AudioPreparationStatus) => void, string>();
+    if (job.onStatus) listeners.set(job.onStatus, job.lessonId);
     const full: InternalQueueJob = {
       key: job.key,
       request: job.request,
@@ -146,6 +218,7 @@ export class AudioQueue {
       status: "queued",
       queuedAt: Date.now(),
       listeners,
+      lessonIds: new Set([job.lessonId]),
     };
     const promise = new Promise<string>((resolve, reject) => {
       full.resolve = resolve;
@@ -160,9 +233,13 @@ export class AudioQueue {
 
   cancelLesson(id: string) {
     for (const job of this.jobs.values()) {
-      if (job.lessonId === id && job.status === "queued" && job.priority > 1) {
+      job.lessonIds.delete(id);
+      for (const [listener, lessonId] of job.listeners) {
+        if (lessonId === id) job.listeners.delete(listener);
+      }
+      if (job.lessonIds.size === 0 && job.status === "queued" && job.priority > 1) {
         this.notify(job, "cancelled");
-        job.reject?.(new Error("cancelled"));
+        job.reject?.(new Error("AUDIO_REQUEST_CANCELLED"));
         this.finish(job.key);
       }
     }
@@ -170,7 +247,7 @@ export class AudioQueue {
 
   private notify(job: InternalQueueJob, status: AudioPreparationStatus) {
     job.status = status;
-    for (const listener of job.listeners) listener(status);
+    for (const listener of job.listeners.keys()) listener(status);
   }
 
   private finish(key: string) {

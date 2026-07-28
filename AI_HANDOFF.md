@@ -1,6 +1,7 @@
 # Personal English Lab — AI handoff
 
-Immersion Listening Loop now uses SQLite schema 9. `/api/listening`, `ListeningService` and
+Immersion Listening Loop bookmarks were added in schema 9; schema 10 adds typed audio recovery
+metadata without deleting cache data. `/api/listening`, `ListeningService` and
 `ListeningPractice` add resumable First Listen → Check Meaning → Second Listen → Sentence Review →
 Final Re-listen without replacing Speaking Ladder. Listening items derive from stable Lesson v1
 source UUIDs. Check Meaning and Sentence Review share the visible Kokoro-first audio lifecycle and
@@ -20,7 +21,7 @@ và Node.js 24. Source of truth là repository này; không sửa artifact porta
 - `tools`: local smoke tests và tooling.
 - `test`: Node test suite.
 
-SQLite là nguồn dữ liệu chính. Database schema 9, lesson schema 1, progress schema 1 và backup
+SQLite là nguồn dữ liệu chính. Database schema 10, lesson schema 1, progress schema 1 và backup
 version 1. `localStorage` chỉ dùng cho migration legacy và theme. Không đổi schema, backup format,
 API contract hay persisted data nếu sprint không yêu cầu migration rõ ràng.
 
@@ -35,13 +36,13 @@ trong `BEGIN IMMEDIATE`, nên quiz và các learning activity không ghi đè nh
 sau feedback thành công, có feedback typed đầy đủ và bị giới hạn ở 20 record mới nhất. Không có
 SQLite migration mới; database schema vẫn là 7 và backup vẫn là v1 backward-compatible.
 
-Audio ưu tiên Kokoro local, có disk cache và fallback Web Speech ở client. Smoke tests không cần
-Kokoro model thật.
+Audio ưu tiên Kokoro local, có disk cache, process-wide concurrency-1 queue và Python synthesis
+lock. Web Speech chỉ nằm trong `useAppAudio` và chỉ fallback sau typed Kokoro prepare failure.
 
 Development đầy đủ chạy bằng `npm run dev:full`. Launcher đọc `KOKORO_*` từ `.env.local`, validate
 runtime, chờ model-ready health và chỉ cleanup process do chính nó tạo. Chạy riêng TTS bằng
-`npm run tts:kokoro`. Audio UI báo `Kokoro local` hoặc `Browser voice fallback`; mỗi lần bấm thử
-Kokoro lại.
+`npm run tts:kokoro`. Audio UI báo preparing/ready/browser/failed; `Retry Kokoro` là manual
+Kokoro-only recovery, không phát hoặc fallback.
 
 ## Verification bắt buộc
 

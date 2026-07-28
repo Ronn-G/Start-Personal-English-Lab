@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -49,6 +49,7 @@ import {
 import {
   AUDIO_DEFAULTS,
   AudioQueue,
+  canFallbackFromAudioError,
   canUseBrowserFallback,
   canonicalAudioInput,
   normalizeAudioText,
@@ -56,6 +57,8 @@ import {
 } from "../src/lib/audio-domain";
 import {
   AudioCacheService,
+  AudioServiceError,
+  ServerSynthesisQueue,
   audioCacheKey,
   cleanupPlan,
   resolveKokoroBaseUrl,
@@ -773,11 +776,90 @@ test("audio queue coalesces duplicates and runs concurrency one", async () => {
   assert.equal(calls, 2);
   assert.equal(max, 1);
 });
+test("audio queue keeps a shared request alive for another lesson consumer", async () => {
+  const queue = new AudioQueue(1);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = async () => {
+    await gate;
+    return "ready";
+  };
+  const first = queue.enqueue({ key: "shared", request, priority: 3, lessonId: "lesson-a" });
+  const second = queue.enqueue({ key: "shared", request, priority: 3, lessonId: "lesson-b" });
+  queue.cancelLesson("lesson-a");
+  release();
+  assert.deepEqual(await Promise.all([first, second]), ["ready", "ready"]);
+});
+test("audio server synthesis queue serializes different cache keys and coalesces duplicates", async () => {
+  const queue = new ServerSynthesisQueue();
+  let active = 0;
+  let maximum = 0;
+  let calls = 0;
+  const task = async () => {
+    calls += 1;
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return {
+      cacheKey: "a".repeat(64),
+      url: "/api/audio/test",
+      cacheHit: false,
+      sizeBytes: 64,
+      provider: "kokoro" as const,
+      status: "ready" as const,
+    };
+  };
+  await Promise.all([
+    queue.enqueue("one", 2, task),
+    queue.enqueue("one", 0, task),
+    queue.enqueue("two", 1, task),
+  ]);
+  assert.equal(calls, 2);
+  assert.equal(maximum, 1);
+});
+test("audio server synthesis queue continues after a provider failure", async () => {
+  const queue = new ServerSynthesisQueue();
+  const failure = queue.enqueue("failed", 0, async () => {
+    throw new Error("provider failed");
+  });
+  await assert.rejects(() => failure, /provider failed/);
+  const recovered = await queue.enqueue("next", 0, async () => ({
+    cacheKey: "b".repeat(64),
+    url: "/api/audio/next",
+    cacheHit: false,
+    sizeBytes: 64,
+    provider: "kokoro",
+    status: "ready",
+  }));
+  assert.equal(recovered.status, "ready");
+  assert.deepEqual(queue.info(), { concurrency: 1, active: 0, queued: 0 });
+});
 test("audio preparation only permits fallback after a real failure", async () => {
   for (const status of ["queued", "generating", "ready", "cancelled"] as const) {
     assert.equal(canUseBrowserFallback(status), false);
   }
   assert.equal(canUseBrowserFallback("failed"), true);
+  for (const code of [
+    "KOKORO_UNAVAILABLE",
+    "KOKORO_TIMEOUT",
+    "KOKORO_INVALID_RESPONSE",
+    "KOKORO_INVALID_WAV",
+    "AUDIO_RETRY_COOLDOWN",
+    "AUDIO_RETRY_REQUIRED",
+  ] as const) {
+    assert.equal(canFallbackFromAudioError(code), true);
+  }
+  for (const code of [
+    "INVALID_AUDIO_REQUEST",
+    "AUDIO_REQUEST_CANCELLED",
+    "AUDIO_STORAGE_FAILED",
+    "AUDIO_PLAYBACK_FAILED",
+  ] as const) {
+    assert.equal(canFallbackFromAudioError(code), false);
+  }
 
   const queue = new AudioQueue(1);
   const firstStatuses: string[] = [];
@@ -840,7 +922,7 @@ test("audio cache service creates atomic WAV, hits cache, repairs missing metada
   assert.equal((await service.info()).count, 0);
   db.close();
 });
-test("audio cache rejects empty text and retries a failed Kokoro generation", async () => {
+test("audio cache types failures, cools down automatic retry, and permits manual recovery", async () => {
   const root = temp();
   const db = new DatabaseSync(":memory:");
   runMigrations(db);
@@ -849,6 +931,7 @@ test("audio cache rejects empty text and retries a failed Kokoro generation", as
   wav.write("WAVE", 8);
   let shouldFail = true;
   let calls = 0;
+  let now = new Date("2026-07-27T00:00:00.000Z");
   const service = new AudioCacheService({
     database: db,
     root,
@@ -857,12 +940,20 @@ test("audio cache rejects empty text and retries a failed Kokoro generation", as
       if (shouldFail) throw new TypeError("fetch failed");
       return new Response(wav, { headers: { "content-type": "audio/wav" } });
     }) as typeof fetch,
+    now: () => now,
   });
 
-  await assert.rejects(() => service.prepare(" \n "), /INVALID_TEXT/);
+  await assert.rejects(
+    () => service.prepare(" \n "),
+    (error: unknown) =>
+      error instanceof AudioServiceError &&
+      error.code === "INVALID_AUDIO_REQUEST" &&
+      error.retryable === false,
+  );
   await assert.rejects(
     () => service.prepare("Retry this sentence.", { voice: undefined }),
-    /fetch failed/,
+    (error: unknown) =>
+      error instanceof AudioServiceError && error.code === "KOKORO_UNAVAILABLE" && error.retryable,
   );
   assert.equal(
     (
@@ -873,7 +964,17 @@ test("audio cache rejects empty text and retries a failed Kokoro generation", as
     "failed",
   );
   shouldFail = false;
-  const retried = await service.prepare("Retry this sentence.", { voice: undefined });
+  await assert.rejects(
+    () => service.prepare("Retry this sentence.", { voice: undefined }),
+    (error: unknown) => error instanceof AudioServiceError && error.code === "AUDIO_RETRY_COOLDOWN",
+  );
+  assert.equal(calls, 1);
+  now = new Date("2026-07-27T00:00:01.000Z");
+  const retried = await service.prepare(
+    "Retry this sentence.",
+    { voice: undefined },
+    { retryMode: "manual" },
+  );
   assert.equal(retried.cacheHit, false);
   assert.equal(calls, 2);
   assert.equal(
@@ -884,6 +985,77 @@ test("audio cache rejects empty text and retries a failed Kokoro generation", as
     ).status,
     "ready",
   );
+  db.close();
+});
+test("audio cache validates WAV files and repairs only invalid ready entries", async () => {
+  const root = temp();
+  const db = new DatabaseSync(":memory:");
+  runMigrations(db);
+  const wav = Buffer.alloc(64);
+  wav.write("RIFF", 0);
+  wav.write("WAVE", 8);
+  const service = new AudioCacheService({
+    database: db,
+    root,
+    fetcher: (async () =>
+      new Response(wav, { headers: { "content-type": "audio/wav" } })) as typeof fetch,
+  });
+  const result = await service.prepare("Validate this file.");
+  writeFileSync(join(root, `${result.cacheKey}.wav`), Buffer.from("broken"));
+  const repaired = await service.repairInvalidEntries();
+  assert.equal(repaired.repaired, 1);
+  assert.equal(
+    (db.prepare("SELECT status FROM audio_cache").get() as { status: string }).status,
+    "stale",
+  );
+  const regenerated = await service.prepare("Validate this file.", {}, { retryMode: "manual" });
+  assert.equal(regenerated.cacheHit, false);
+  db.close();
+});
+test("audio cache reports an invalid WAV separately from provider HTTP failure", async () => {
+  const root = temp();
+  const db = new DatabaseSync(":memory:");
+  runMigrations(db);
+  const service = new AudioCacheService({
+    database: db,
+    root,
+    fetcher: (async () =>
+      new Response(Buffer.from("not a wav"), {
+        headers: { "content-type": "audio/wav" },
+      })) as typeof fetch,
+  });
+  await assert.rejects(
+    () => service.prepare("Return invalid audio."),
+    (error: unknown) => error instanceof AudioServiceError && error.code === "KOKORO_INVALID_WAV",
+  );
+  assert.equal(
+    (db.prepare("SELECT error_code FROM audio_cache").get() as { error_code: string }).error_code,
+    "KOKORO_INVALID_WAV",
+  );
+  db.close();
+});
+test("audio health response is bounded to safe provider state", async () => {
+  const db = new DatabaseSync(":memory:");
+  runMigrations(db);
+  const ready = await new AudioCacheService({
+    database: db,
+    fetcher: (async () =>
+      Response.json({ status: "ok", modelLoaded: true, modelPath: "private" })) as typeof fetch,
+  }).health();
+  assert.equal(ready.configured, true);
+  assert.equal(ready.reachable, true);
+  assert.equal(ready.status, "ready");
+  assert.equal("modelPath" in ready, false);
+
+  const unavailable = await new AudioCacheService({
+    database: db,
+    fetcher: (async () => {
+      throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
+    }) as typeof fetch,
+  }).health();
+  assert.equal(unavailable.reachable, false);
+  assert.equal(unavailable.error, "KOKORO_UNAVAILABLE");
+  assert.equal(JSON.stringify(unavailable).includes("ECONNREFUSED"), false);
   db.close();
 });
 test("audio cleanup plan is LRU and protects current/generating files", () => {
@@ -924,14 +1096,37 @@ test("Kokoro launcher and audio UI avoid personal paths and expose source recove
     "tools/start_dev.ps1",
     "src/server/audio/audio-cache.ts",
     "src/components/lesson/SpeakButton.tsx",
+    "src/hooks/useAppAudio.ts",
+    "src/app/api/audio/health/route.ts",
+    "tools/kokoro_server.py",
   ];
   const source = files.map((file) => readFileSync(join(process.cwd(), file), "utf8")).join("\n");
   assert.equal(source.includes("L:\\\\tts_tool"), false);
   assert.equal(source.includes("C:\\\\Users\\\\long"), false);
   assert.ok(source.includes(".env.local"));
   assert.ok(source.includes("modelLoaded"));
-  assert.ok(source.includes("Kokoro local"));
-  assert.ok(source.includes("Browser voice fallback"));
+  assert.ok(source.includes("Kokoro audio ready"));
+  assert.ok(source.includes("Using browser voice"));
+  assert.ok(source.includes("Retry Kokoro"));
+  assert.ok(source.includes("kokoro_lock"));
+  assert.ok(source.includes("request_queue_size = 64"));
+  assert.ok(source.includes("repairInvalidEntries"));
+});
+test("all browser playback and browser voice fallback live in the shared audio hook", () => {
+  const hook = readFileSync(join(process.cwd(), "src/hooks/useAppAudio.ts"), "utf8");
+  const otherSources = [
+    "src/components/ListeningPractice.tsx",
+    "src/components/LessonGenerator.tsx",
+    "src/components/lesson/SpeakButton.tsx",
+    "src/lib/audio-client.ts",
+  ]
+    .map((file) => readFileSync(join(process.cwd(), file), "utf8"))
+    .join("\n");
+  assert.ok(hook.includes("new Audio(url)"));
+  assert.ok(hook.includes("speechSynthesis"));
+  assert.equal(otherSources.includes("new Audio("), false);
+  assert.equal(otherSources.includes("speechSynthesis"), false);
+  assert.ok(hook.includes("AUDIO_PLAYBACK_FAILED"));
 });
 function speakingLesson(): Lesson {
   const item = lesson();

@@ -20,9 +20,9 @@ Invoke-RestMethod http://127.0.0.1:5050/health
 Test-NetConnection 127.0.0.1 -Port 5050
 ```
 
-Nút nghe trong Check Meaning và Sentence Review dùng chung lifecycle Kokoro-first: preparing,
-Kokoro ready, browser fallback hoặc failed đều được hiển thị. Browser voice chỉ chạy sau lỗi Kokoro
-thực sự từ một thao tác Play; `Retry Kokoro` không gọi fallback.
+Mọi nút nghe dùng chung lifecycle Kokoro-first: preparing, ready, browser fallback hoặc failed đều
+được hiển thị. Browser voice chỉ chạy sau typed Kokoro preparation failure từ thao tác Play; lỗi
+media/cancellation/storage không fallback, và `Retry Kokoro` chỉ chuẩn bị lại Kokoro.
 
 Entry point nằm trong `src/app`; UI ở `src/components`; domain/client helpers ở `src/lib`;
 SQLite, backup và audio cache ở `src/server`; kiểu dữ liệu ở `src/types`. Công cụ và test nằm
@@ -43,14 +43,15 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 9; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 10; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
 Backup version 1 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson/progress và speaking
 progress/session. Backup không gồm audio cache, API key, environment hay metadata nhạy cảm.
 
-Kokoro chạy local tại `127.0.0.1:5050`; app lưu WAV và metadata trong audio cache. Khi Kokoro
-không khả dụng, client dùng Web Speech API. Health check của Kokoro ở `/health`.
+Kokoro chạy local tại `127.0.0.1:5050`; app lưu WAV và metadata trong audio cache. Server queue và
+Python synthesis lock serialize model calls. App health ở `/api/audio/health`; Web Speech chỉ là
+fallback có nhãn sau lỗi prepare Kokoro. Xem [audio lifecycle](docs/audio-cache.md).
 
 Speaking Ladder hiện tại là Read → Recall → Keywords → Personalize → Free Speak. Việc đổi ladder
 hoặc thêm Shadow không thuộc baseline này.

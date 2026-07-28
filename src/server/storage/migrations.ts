@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 9;
+export const CURRENT_DATABASE_VERSION = 10;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -291,6 +291,32 @@ export const MIGRATIONS: readonly Migration[] = [
 
         CREATE INDEX listening_item_saved_idx
           ON listening_item_progress(saved_for_relisten, updated_at DESC);
+      `);
+    },
+  },
+  {
+    version: 10,
+    name: "typed_audio_failures",
+    up(database) {
+      database.exec(`
+        ALTER TABLE audio_cache
+          ADD COLUMN retryable INTEGER CHECK(retryable IN (0,1));
+        ALTER TABLE audio_cache
+          ADD COLUMN last_attempt_at TEXT;
+        ALTER TABLE audio_cache
+          ADD COLUMN next_retry_at TEXT;
+        ALTER TABLE audio_cache
+          ADD COLUMN error_summary TEXT;
+
+        UPDATE audio_cache
+        SET retryable = 1,
+            last_attempt_at = updated_at,
+            error_code = 'KOKORO_UNAVAILABLE',
+            error_summary = 'Kokoro was unreachable.'
+        WHERE status = 'failed';
+
+        CREATE INDEX audio_cache_retry_idx
+          ON audio_cache(status,retryable,next_retry_at);
       `);
     },
   },

@@ -24,8 +24,8 @@ queue and retry behavior. Play and loop 3/5 prepare one cached URL and reuse the
 for the whole run.
 
 Kokoro is always preferred. Queued and generating jobs stay in **Preparing Kokoro audio** and never
-trigger fallback. Browser voice is allowed only after a real Kokoro prepare/media failure following
-a user Play action, and the control then shows **Using browser voice**. **Retry Kokoro** never starts
+trigger fallback. Browser voice is allowed only after a typed, retryable Kokoro preparation failure
+following a user Play action, and the control then shows **Using browser voice**. **Retry Kokoro** never starts
 browser voice. A normal `HTMLAudioElement.play()` rejection is shown as a playback failure instead
 of being treated as a Kokoro provider failure. No audio starts without a user action.
 

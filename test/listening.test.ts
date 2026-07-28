@@ -187,8 +187,8 @@ test("listening comprehension ranks and stable item IDs are strict and determini
   );
 });
 
-test("schema v8 migrates to v9 without losing legacy listening data and rolls back", () => {
-  const database = databaseAt(8);
+test("schema v9 migrates to v10 without losing legacy listening data and rolls back", () => {
+  const database = databaseAt(9);
   const lesson = fixtureLesson();
   insertLesson(database, lesson);
   const item = extractListeningItems(lesson)[0];
@@ -207,7 +207,7 @@ test("schema v8 migrates to v9 without losing legacy listening data and rolls ba
       lesson.updatedAt,
       lesson.updatedAt,
     );
-  assert.equal(runMigrations(database), 9);
+  assert.equal(runMigrations(database), 10);
   assert.equal(
     (
       database.prepare("SELECT title FROM lessons WHERE id=?").get(lesson.id) as {
@@ -222,8 +222,15 @@ test("schema v8 migrates to v9 without losing legacy listening data and rolls ba
         user_version: number;
       }
     ).user_version,
-    9,
+    10,
   );
+  const audioColumns = database
+    .prepare("PRAGMA table_info(audio_cache)")
+    .all()
+    .map((column) => (column as { name: string }).name);
+  for (const name of ["retryable", "last_attempt_at", "next_retry_at", "error_summary"]) {
+    assert.ok(audioColumns.includes(name));
+  }
   assert.equal(
     (
       database
@@ -245,18 +252,18 @@ test("schema v8 migrates to v9 without losing legacy listening data and rolls ba
   assert.equal(legacy.difficult, 1);
   database.close();
 
-  const failing = databaseAt(8);
+  const failing = databaseAt(9);
   const brokenMigration: Migration = {
-    version: 9,
-    name: "broken_saved_listening",
+    version: 10,
+    name: "broken_typed_audio_failures",
     up(db) {
       db.exec("CREATE TABLE should_rollback(id TEXT PRIMARY KEY) STRICT");
       throw new Error("intentional failure");
     },
   };
   assert.throws(
-    () => runMigrations(failing, [...MIGRATIONS.slice(0, 8), brokenMigration]),
-    /broken_saved_listening/,
+    () => runMigrations(failing, [...MIGRATIONS.slice(0, 9), brokenMigration]),
+    /broken_typed_audio_failures/,
   );
   assert.equal(
     (
@@ -264,7 +271,7 @@ test("schema v8 migrates to v9 without losing legacy listening data and rolls ba
         user_version: number;
       }
     ).user_version,
-    8,
+    9,
   );
   assert.equal(
     failing

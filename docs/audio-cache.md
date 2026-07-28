@@ -1,38 +1,78 @@
-# Background audio cache (Sprint 5)
+# Kokoro audio lifecycle and cache
 
-Opening one lesson renders immediately, selects at most 15 unique English items, then queues preparation in the background. Priority is user click (0), visible content (1), shadowing (2), example sentences (3), sentence mining (4), vocabulary context (5), other preload (6). The initial plan includes up to five shadowing lines, five examples, three mining sentences and five vocabulary contexts; Vietnamese meanings, titles, summaries, quiz answers and long text are excluded.
+All learning surfaces use the same canonical stack:
 
-The browser queue has concurrency 1 and coalesces the same canonical request. Leaving a lesson cancels low-priority queued work; Strict Mode duplicate enqueue shares one promise. Preload never plays audio. A click promotes/coalesces the job and plays only after that user action. If Kokoro generation fails, `window.speechSynthesis` is used explicitly as an uncached browser fallback.
+`SpeakButton / Listening / Re-listen -> useAppAudio -> audioClient -> /api/audio/prepare -> AudioCacheService -> Kokoro`
 
-The SHA-256 cache key covers whitespace-normalized (case-preserved) text, voice, speed, language, Kokoro model version, normalization version and WAV format. Files are named only by the key and live in `<PERSONAL_ENGLISH_LAB_DATA_DIR>/audio-cache` (`.data/audio-cache` in development and Local AppData for portable Windows). The client sees only `/api/audio/<key>`, never a path.
+The canonical request includes normalized, case-preserved text, voice, speed, language, model
+version, normalization version and WAV format. Its SHA-256 key is shared across vocabulary, idioms,
+grammar, examples, shadowing, sentence mining, listening, Speaking Ladder and Re-listen. Files live
+in `<PERSONAL_ENGLISH_LAB_DATA_DIR>/audio-cache`; the browser only sees `/api/audio/<key>`.
 
-SQLite schema v5 stores status and operational metadata in `audio_cache`, never WAV blobs or full text. Generation validates input, locks per key in the local Node process, marks generating, calls loopback Kokoro with a 30-second timeout, validates content type/size/RIFF-WAVE header, writes a `.tmp` file, atomically renames it, then marks ready. Ready metadata with a missing file becomes stale. The in-memory lock assumes the supported single local Node process.
+## Startup and health
 
-The default limit is 500 MB. After generation, LRU cleanup removes only enough old ready entries, excluding generating and newly-created audio. Cleanup failure does not invalidate the new audio. The lesson UI shows ready/total progress plus cache file count/size and offers a confirmed clear action. Clearing audio does not touch lessons, progress, imports, database or legacy localStorage.
+Create an ignored `.env.local` from the Kokoro placeholders in `.env.example`. `npm run dev:full`
+validates Python, model and voices, reuses a healthy service or starts one, waits for model-ready
+health, then starts Next.js. `npm run tts:kokoro` starts only TTS. Port 5050 must be free or already
+serve a healthy Kokoro instance.
 
-Audio files and `audio_cache` metadata are excluded from backup v1; restore does not delete reusable text-keyed cache. Portable launch already assigns the same writable Local AppData directory to SQLite and audio cache, and build packaging does not copy that directory. Concurrency 2, cache size/voice UI, multi-process locking, low-end hardware throughput and a clean extracted ZIP remain unbenchmarked/unverified. For `KOKORO_UNAVAILABLE` or timeout, verify `http://127.0.0.1:5050/health`, model paths and launcher logs.
+Direct provider health is `http://127.0.0.1:5050/health`. App-safe health is
+`GET /api/audio/health`; it returns configured/reachable/status/checkedAt and a safe error code,
+without paths, secrets, stacks or raw exceptions.
 
-## Development startup and fallback
+## Concurrency and playback
 
-`npm run dev:full` reads only the supported `KOKORO_*` values from the ignored `.env.local`,
-validates Python/model/voices, reuses an already healthy server, or starts one and waits up to 90
-seconds for model readiness before starting Next.js. Logs are written under ignored `.logs/`.
-`npm run tts:kokoro` runs only the TTS server with the same configuration.
+The browser queue and the process-wide server synthesis queue use concurrency 1 and coalesce the
+same key. The server queue protects requests coming from different components or tabs and continues
+after a failed job. `tools/kokoro_server.py` keeps `ThreadingHTTPServer` responsive but guards
+`Kokoro.create()` with one context-managed lock because Kokoro/phonemizer native state is not
+thread-safe. Request parsing, validation, health and HTTP response writing remain outside the lock.
+The local HTTP server keeps a bounded connection backlog above the expected app batch size, so
+simultaneous sockets wait for request threads instead of being refused before they reach the lock.
 
-The Python server loads model and voices before binding the port. `GET /health` returns
-`status: "ok"` and `modelLoaded: true` only after initialization. The Next.js cache service uses
-`KOKORO_BASE_URL` and validates the returned WAV. A successful click shows `Kokoro local`;
-connection, timeout, invalid WAV, or playback failure uses Web Speech and shows
-`Browser voice fallback`. The next click retries Kokoro.
+Only `useAppAudio` creates `HTMLAudioElement` or uses Web Speech. It owns stop, pause, loops,
+unmount cleanup and a module-wide playback arbiter. A loop reuses one resolved URL/source and does
+not prepare again.
 
-Troubleshooting:
+Kokoro is preferred. Queued/generating jobs remain **Preparing Kokoro audio**. Browser voice is
+allowed only after a typed, retryable Kokoro preparation failure caused by a user Play action; the
+UI then says **Using browser voice**. Cancellation, storage and media playback errors never trigger
+fallback. **Retry Kokoro** performs a manual Kokoro-only prepare and does not play.
 
-- Missing Python/model/voices fails before either server starts.
-- A busy port without valid Kokoro health fails instead of starting a duplicate.
-- Python dependency and ONNX load errors are in `.logs/kokoro-dev.stderr.log`.
-- Verify with `Invoke-RestMethod http://127.0.0.1:5050/health` and
-  `Test-NetConnection 127.0.0.1 -Port 5050`.
+## Typed failure and recovery
+
+Schema v10 adds `retryable`, `last_attempt_at`, `next_retry_at`, and a safe `error_summary` to the
+existing `audio_cache` table. Existing rows and WAV files remain. Typed failures distinguish
+provider unavailable, timeout, invalid HTTP response, invalid WAV, invalid request, cancellation,
+storage and browser media playback.
+
+Automatic retry uses bounded exponential cooldown and stops after five failures. Preload never
+retries a known failed key, so background work cannot create a retry storm. Manual Retry Kokoro
+bypasses cooldown and the automatic limit while retaining the same cache key. A successful retry
+changes the existing entry to `ready`.
+
+Ready files are verified by size and RIFF/WAVE bytes. **Repair invalid entries** marks only missing
+or corrupt ready entries stale; the next explicit retry/play regenerates them. Clearing the whole
+cache is not a normal troubleshooting step.
+
+The diagnostics UI shows Kokoro health, active/queued synthesis, concurrency, ready/failed counts,
+the latest safe error code and invalid-file repair.
+
+## Troubleshooting
+
+- Port 5050 closed: run `npm run dev:full`, then use `Test-NetConnection 127.0.0.1 -Port 5050`.
+- Kokoro unavailable or `fetch failed`: verify `.env.local`, direct `/health`, and launcher logs.
+- Timeout: wait for the current serialized job to finish, check service load, then Retry Kokoro.
+- Old failed cache entry: start Kokoro and use Retry Kokoro; do not delete the database/cache.
+- Missing/corrupt WAV: run Repair invalid entries, then Retry Kokoro.
+- Browser fallback: confirm **Using browser voice**, restore Kokoro, then use Retry Kokoro.
+- Service errors: inspect ignored `.logs/kokoro-dev.stderr.log`; reports should include codes, not
+  full lesson text.
+
+Audio cache files and metadata stay outside backup. Do not commit `.env.local`, `.data`, model,
+WAV, log or portable artifacts.
 
 # Speaking preload
 
-Guided Speaking Ladder preloads only the current and next sentence with background priority. It passes the same normalized text and audio configuration used elsewhere, without step or practice IDs in the cache key. Playback and Web Speech fallback still require an explicit user click; preload failure never blocks practice.
+Speaking Ladder preloads only the current and next item using the same canonical request. Preload
+never plays audio and never blocks practice.

@@ -1,14 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { audioClient } from "@/lib/audio-client";
-import {
-  AUDIO_DEFAULTS,
-  rateToKokoroSpeed,
-  type AudioPreparationStatus,
-  type AudioPreloadItem,
-} from "@/lib/audio-domain";
+import { useAppAudio } from "@/hooks/useAppAudio";
 import {
   selectSourceDiverseListeningItems,
   type ComprehensionLevel,
@@ -99,349 +93,6 @@ const stepLabel: Record<ListeningStep, string> = {
   final_relisten: "Final Re-listen",
   complete: "Complete",
 };
-
-interface PlaybackState {
-  itemId: string | null;
-  loading: boolean;
-  playing: boolean;
-  paused: boolean;
-  completed: number;
-  target: number;
-  source?: "kokoro" | "browser";
-  error?: string;
-}
-
-type ListeningAudioStatus = "idle" | "preparing" | "ready" | "browser" | "failed";
-
-interface ListeningAudioState {
-  status: ListeningAudioStatus;
-  error?: string;
-}
-
-function useListeningPlayback(
-  lessonId: string,
-  onRecorded: (itemId: string, repetitions: number) => void,
-) {
-  const mountedRef = useRef(true);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const finishOneRef = useRef<() => void>(() => undefined);
-  const runRef = useRef<{
-    itemId: string;
-    text: string;
-    target: number;
-    completed: number;
-    rate: number;
-    recorded: boolean;
-    source: "kokoro" | "browser" | null;
-  } | null>(null);
-  const onRecordedRef = useRef(onRecorded);
-  const [state, setState] = useState<PlaybackState>({
-    itemId: null,
-    loading: false,
-    playing: false,
-    paused: false,
-    completed: 0,
-    target: 0,
-  });
-  const [itemAudio, setItemAudio] = useState<Record<string, ListeningAudioState>>({});
-  useEffect(() => {
-    onRecordedRef.current = onRecorded;
-  }, [onRecorded]);
-
-  const updateItemAudio = useCallback(
-    (itemId: string, status: ListeningAudioStatus, error?: string) => {
-      if (!mountedRef.current) return;
-      setItemAudio((current) => ({
-        ...current,
-        [itemId]: { status, error },
-      }));
-    },
-    [],
-  );
-
-  const recordRun = useCallback(() => {
-    const run = runRef.current;
-    if (!run || run.recorded || run.itemId === "track" || run.completed === 0) return;
-    run.recorded = true;
-    onRecordedRef.current(run.itemId, run.completed);
-  }, []);
-
-  const stop = useCallback(
-    (recordCompleted = true) => {
-      audioRef.current?.pause();
-      audioRef.current = null;
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-      speechRef.current = null;
-      if (recordCompleted) recordRun();
-      runRef.current = null;
-      setState((current) => ({
-        ...current,
-        loading: false,
-        playing: false,
-        paused: false,
-      }));
-    },
-    [recordRun],
-  );
-
-  const finishOne = useCallback(() => {
-    const run = runRef.current;
-    if (!run) return;
-    run.completed += 1;
-    setState((current) => ({ ...current, completed: run.completed }));
-    if (run.completed >= run.target) {
-      recordRun();
-      runRef.current = null;
-      setState((current) => ({ ...current, playing: false, paused: false }));
-      return;
-    }
-    const audio = audioRef.current;
-    if (audio) {
-      audio.currentTime = 0;
-      void audio.play().catch((reason) => {
-        if (runRef.current !== run) return;
-        updateItemAudio(
-          run.itemId,
-          "failed",
-          reason instanceof Error ? reason.message : "Kokoro playback failed.",
-        );
-        setState((current) => ({
-          ...current,
-          playing: false,
-          error: "Audio playback stopped. Try again.",
-        }));
-      });
-      return;
-    }
-    if ("speechSynthesis" in window) {
-      const utterance = new SpeechSynthesisUtterance(run.text);
-      utterance.lang = "en-US";
-      utterance.rate = run.rate;
-      utterance.onend = () => finishOneRef.current();
-      utterance.onerror = () => {
-        if (runRef.current !== run) return;
-        updateItemAudio(run.itemId, "failed", "Browser voice stopped.");
-        setState((current) => ({
-          ...current,
-          playing: false,
-          error: "Browser voice stopped. Try again.",
-        }));
-      };
-      speechRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
-    }
-  }, [recordRun, updateItemAudio]);
-  useEffect(() => {
-    finishOneRef.current = finishOne;
-  }, [finishOne]);
-
-  const playBrowserFallback = useCallback(
-    (run: {
-      itemId: string;
-      text: string;
-      target: number;
-      completed: number;
-      rate: number;
-      recorded: boolean;
-      source: "kokoro" | "browser" | null;
-    }) => {
-      if (!("speechSynthesis" in window) || runRef.current !== run) return false;
-      if (run.source === "browser") return true;
-      run.source = "browser";
-      audioRef.current?.pause();
-      audioRef.current = null;
-      const utterance = new SpeechSynthesisUtterance(run.text);
-      utterance.lang = "en-US";
-      utterance.rate = run.rate;
-      utterance.onend = () => finishOneRef.current();
-      utterance.onerror = () => {
-        if (runRef.current !== run) return;
-        updateItemAudio(run.itemId, "failed", "Browser voice stopped.");
-        setState((current) => ({
-          ...current,
-          loading: false,
-          playing: false,
-          error: "Browser voice stopped. Try again.",
-        }));
-      };
-      speechRef.current = utterance;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-      setState((current) => ({
-        ...current,
-        loading: false,
-        playing: true,
-        source: "browser",
-        error: undefined,
-      }));
-      updateItemAudio(run.itemId, "browser", "Kokoro is unavailable.");
-      return true;
-    },
-    [updateItemAudio],
-  );
-
-  const play = useCallback(
-    async (itemId: string, text: string, target = 1, rate = 0.86, allowBrowserFallback = true) => {
-      stop(true);
-      const run = {
-        itemId,
-        text,
-        target,
-        completed: 0,
-        rate,
-        recorded: false,
-        source: null as "kokoro" | "browser" | null,
-      };
-      runRef.current = run;
-      updateItemAudio(itemId, "preparing");
-      setState({
-        itemId,
-        loading: true,
-        playing: false,
-        paused: false,
-        completed: 0,
-        target,
-      });
-      let url: string;
-      try {
-        url = await audioClient.prepare(text, lessonId, rate, (status) => {
-          if (runRef.current !== run) return;
-          if (status === "queued" || status === "generating") {
-            updateItemAudio(itemId, "preparing");
-          } else if (status === "ready") {
-            updateItemAudio(itemId, "ready");
-          } else if (status === "failed") {
-            updateItemAudio(itemId, "failed", "Kokoro preparation failed.");
-          }
-        });
-      } catch (reason) {
-        if (runRef.current !== run) return;
-        const detail = reason instanceof Error ? reason.message : "Kokoro audio failed.";
-        if (!allowBrowserFallback || !playBrowserFallback(run)) {
-          updateItemAudio(itemId, "failed", detail);
-          setState((current) => ({
-            ...current,
-            loading: false,
-            playing: false,
-            error: "Audio is unavailable. Check Kokoro and try again.",
-          }));
-        }
-        return;
-      }
-      if (runRef.current !== run) return;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => finishOneRef.current();
-      audio.onerror = () => {
-        if (runRef.current !== run) return;
-        if (!allowBrowserFallback || !playBrowserFallback(run)) {
-          updateItemAudio(itemId, "failed", "Kokoro audio could not play.");
-          setState((current) => ({
-            ...current,
-            loading: false,
-            playing: false,
-            error: "Kokoro audio could not play. Try again.",
-          }));
-        }
-      };
-      try {
-        await audio.play();
-        if (runRef.current !== run || run.source === "browser") {
-          audio.pause();
-          return;
-        }
-        run.source = "kokoro";
-        updateItemAudio(itemId, "ready");
-        setState((current) => ({
-          ...current,
-          loading: false,
-          playing: true,
-          source: "kokoro",
-          error: undefined,
-        }));
-      } catch (reason) {
-        if (runRef.current !== run || run.source === "browser") return;
-        const detail = reason instanceof Error ? reason.message : "Kokoro playback failed.";
-        updateItemAudio(itemId, "failed", detail);
-        setState((current) => ({
-          ...current,
-          loading: false,
-          playing: false,
-          error: "Kokoro audio could not start. Try Play again.",
-        }));
-      }
-    },
-    [lessonId, playBrowserFallback, stop, updateItemAudio],
-  );
-
-  const preload = useCallback(
-    (
-      items: Array<{
-        id: string;
-        text: string;
-        sourceType: ListeningSourceType;
-      }>,
-      rate: number,
-    ) => {
-      const speed = rateToKokoroSpeed(rate);
-      const preloadItems: AudioPreloadItem[] = items.map((item, index) => ({
-        lessonId,
-        itemId: item.id,
-        text: item.text,
-        sourceType: item.sourceType === "sentence_mining" ? "sentence-mining" : item.sourceType,
-        priority: index + 1,
-        config: { ...AUDIO_DEFAULTS, speed },
-      }));
-      audioClient.preload(preloadItems, undefined, (item, status: AudioPreparationStatus) => {
-        if (status === "queued" || status === "generating") {
-          updateItemAudio(item.itemId, "preparing");
-        } else if (status === "ready") {
-          updateItemAudio(item.itemId, "ready");
-        } else if (status === "failed") {
-          updateItemAudio(item.itemId, "failed", "Kokoro preparation failed.");
-        }
-      });
-    },
-    [lessonId, updateItemAudio],
-  );
-
-  const togglePause = useCallback(() => {
-    if (!runRef.current) return;
-    if (state.paused) {
-      if (audioRef.current) void audioRef.current.play();
-      else if ("speechSynthesis" in window) window.speechSynthesis.resume();
-      setState((current) => ({ ...current, paused: false, playing: true }));
-    } else {
-      audioRef.current?.pause();
-      if ("speechSynthesis" in window) window.speechSynthesis.pause();
-      setState((current) => ({ ...current, paused: true, playing: false }));
-    }
-  }, [state.paused]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      audioRef.current?.pause();
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-      runRef.current = null;
-      audioClient.cancelLesson(lessonId);
-    };
-  }, [lessonId]);
-
-  const retryKokoro = useCallback(
-    (itemId: string, text: string, rate: number) => play(itemId, text, 1, rate, false),
-    [play],
-  );
-
-  const audioStatus = useCallback(
-    (itemId: string): ListeningAudioState => itemAudio[itemId] ?? { status: "idle" },
-    [itemAudio],
-  );
-
-  return { state, play, retryKokoro, preload, audioStatus, stop, togglePause };
-}
 
 export default function ListeningPractice({
   lessonId,
@@ -603,7 +254,7 @@ function ActiveListeningSession({
   );
   const [finalNote, setFinalNote] = useState(session.finalNote);
   const [rate, setRate] = useState(0.86);
-  const playback = useListeningPlayback(data.lessonId, (itemId, repetitions) => {
+  const playback = useAppAudio(data.lessonId, (itemId, repetitions) => {
     void command(
       repetitions === 1 ? "record_listen" : "record_loop",
       repetitions === 1 ? { itemId } : { itemId, count: repetitions },
@@ -866,7 +517,7 @@ function PracticeTrack({
   track: string;
   rate: number;
   setRate: (value: number) => void;
-  playback: ReturnType<typeof useListeningPlayback>;
+  playback: ReturnType<typeof useAppAudio>;
 }) {
   const active = playback.state.itemId === "track";
   return (
@@ -995,7 +646,7 @@ function ListeningAudioControls({
 }: {
   item: ListeningItemData;
   rate: number;
-  playback: ReturnType<typeof useListeningPlayback>;
+  playback: ReturnType<typeof useAppAudio>;
   loops?: boolean;
 }) {
   const active = playback.state.itemId === item.id;
@@ -1088,7 +739,7 @@ function SentenceTranscript({
 }: {
   items: ListeningItemData[];
   revealed: Set<string>;
-  playback: ReturnType<typeof useListeningPlayback>;
+  playback: ReturnType<typeof useAppAudio>;
   rate: number;
   command: Command;
 }) {
@@ -1153,7 +804,7 @@ function AudioFirstCard({
   item: ListeningItemData;
   revealed: boolean;
   rate: number;
-  playback: ReturnType<typeof useListeningPlayback>;
+  playback: ReturnType<typeof useAppAudio>;
   command: Command;
   practiceSpeaking: () => void;
 }) {
@@ -1269,7 +920,7 @@ function CompletedListening({
   practiceAgain: () => void;
   back: () => void;
 }) {
-  const playback = useListeningPlayback(data.lessonId, () => undefined);
+  const playback = useAppAudio(data.lessonId, () => undefined);
   const saved = data.items.filter((item) => item.progress.savedForRelisten).length;
   return (
     <section className="mx-auto max-w-3xl rounded-3xl border-2 border-border bg-card p-8 text-center">

@@ -1,60 +1,73 @@
 import { NextResponse } from "next/server";
 
-import { AudioCacheService } from "@/server/audio/audio-cache";
+import type { AudioRetryMode, AudioSourceType } from "@/lib/audio-domain";
+import { AudioCacheService, AudioServiceError } from "@/server/audio/audio-cache";
 import { getStorageContext } from "@/server/storage";
 import { isRecord, readJsonBody } from "@/server/storage/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const retryModes = new Set<AudioRetryMode>(["preload", "automatic", "manual"]);
+
 export async function POST(request: Request) {
   try {
     const body = await readJsonBody(request, 10000);
     if (!isRecord(body) || typeof body.text !== "string") {
-      return NextResponse.json(
-        {
-          error: "INVALID_INPUT",
-          provider: "kokoro",
-          status: "failed",
-          retryable: false,
-        },
-        { status: 400 },
+      throw new AudioServiceError(
+        "INVALID_AUDIO_REQUEST",
+        400,
+        false,
+        "The audio request is invalid.",
       );
     }
+    const retryMode =
+      typeof body.retryMode === "string" && retryModes.has(body.retryMode as AudioRetryMode)
+        ? (body.retryMode as AudioRetryMode)
+        : "automatic";
     const result = await new AudioCacheService({
       database: getStorageContext().database,
-    }).prepare(body.text, {
-      voice: typeof body.voice === "string" ? body.voice : undefined,
-      speed: typeof body.speed === "number" ? body.speed : undefined,
-      language: typeof body.language === "string" ? body.language : undefined,
-      modelVersion: typeof body.modelVersion === "string" ? body.modelVersion : undefined,
-      normalizationVersion:
-        typeof body.normalizationVersion === "number" ? body.normalizationVersion : undefined,
-      format: body.format === "wav" ? body.format : undefined,
-    });
+    }).prepare(
+      body.text,
+      {
+        voice: typeof body.voice === "string" ? body.voice : undefined,
+        speed: typeof body.speed === "number" ? body.speed : undefined,
+        language: typeof body.language === "string" ? body.language : undefined,
+        modelVersion: typeof body.modelVersion === "string" ? body.modelVersion : undefined,
+        normalizationVersion:
+          typeof body.normalizationVersion === "number" ? body.normalizationVersion : undefined,
+        format: body.format === "wav" ? body.format : undefined,
+      },
+      {
+        retryMode,
+        priority:
+          typeof body.priority === "number" && Number.isFinite(body.priority)
+            ? Math.max(0, Math.min(20, Math.trunc(body.priority)))
+            : 0,
+        sourceType:
+          typeof body.sourceType === "string" ? (body.sourceType as AudioSourceType) : undefined,
+      },
+    );
     return NextResponse.json(result);
   } catch (error) {
-    const message = String(error);
-    const status = message.includes("INVALID_TEXT") ? 400 : message.includes("Abort") ? 504 : 503;
-    const errorCode =
-      status === 400 ? "INVALID_TEXT" : status === 504 ? "KOKORO_TIMEOUT" : "KOKORO_UNAVAILABLE";
+    const failure =
+      error instanceof AudioServiceError
+        ? error
+        : new AudioServiceError("KOKORO_UNAVAILABLE", 503, true, "Kokoro is unavailable.");
     console.warn("Kokoro audio preparation failed.", {
-      errorCode,
-      cause:
-        error instanceof Error && error.cause instanceof Error
-          ? error.cause.message
-          : error instanceof Error
-            ? error.message
-            : "Unknown audio error",
+      errorCode: failure.code,
+      causeCode: failure.causeCode,
     });
     return NextResponse.json(
       {
-        error: errorCode,
+        error: failure.code,
+        summary: failure.safeSummary,
         provider: "kokoro",
         status: "failed",
-        retryable: status !== 400,
+        retryable: failure.retryable,
+        nextRetryAt: failure.nextRetryAt,
       },
-      { status },
+      { status: failure.httpStatus },
     );
   }
 }

@@ -1,6 +1,7 @@
 # SQLite Storage Architecture
 
-> Schema v9 adds an indexed `saved_for_relisten` bookmark to the v8 listening tables. Listening
+> Schema v9 adds an indexed `saved_for_relisten` bookmark to the v8 listening tables. Schema v10
+> adds typed retry/cooldown metadata to `audio_cache` without deleting rows or WAV files. Listening
 > commands resolve lesson/source identity server-side, enforce one active session per lesson,
 > validate sequential business steps and update bookmarks transactionally. Recognition/difficulty
 > columns remain legacy compatibility data; listening and speaking progress remain independent.

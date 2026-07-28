@@ -6,6 +6,10 @@
 > Check Meaning and Sentence Review share one visible Kokoro-first controller and can open Speaking
 > Ladder with the same source item. Legacy recognition/difficulty fields are no longer written.
 
+> Kokoro stabilization: schema v10 adds typed cache failure/cooldown metadata. All browser playback
+> goes through `useAppAudio`; one process-wide server queue and one Python synthesis lock prevent
+> unsafe parallel `Kokoro.create()` calls.
+
 > Sprint 6: Guided Speaking Ladder derives practice locally from saved lessons. `/api/speaking` owns persisted Start/Continue/Practice Again, daily selection, difficult-item review, ranked progress updates, and resumable sessions. Lesson generation and its prompt are unchanged.
 
 > Sprint 5: SQLite schema v5 tracks filesystem audio cache metadata. Lesson UI uses a shared concurrency-1 client queue; Node audio routes own Kokoro generation, WAV validation, atomic file publication, serving, LRU cleanup and clear operations. Web Speech fallback now exists in runtime and is only invoked after a user click.

@@ -6,6 +6,7 @@ import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -23,6 +24,7 @@ DEFAULT_SPEED = 1.0
 MAX_TEXT_CHARS = 650
 
 kokoro: Kokoro | None = None
+kokoro_lock = Lock()
 model_path = DEFAULT_MODEL_PATH
 voices_path = DEFAULT_VOICES_PATH
 
@@ -51,13 +53,17 @@ def synthesize_wav(text: str, voice: str, speed: float, lang: str) -> bytes:
     if len(normalized) > MAX_TEXT_CHARS:
         normalized = normalized[:MAX_TEXT_CHARS].rsplit(" ", 1)[0].strip()
 
-    engine = get_kokoro()
-    samples, sample_rate = engine.create(
-        normalized,
-        voice=voice or DEFAULT_VOICE,
-        speed=speed or DEFAULT_SPEED,
-        lang=lang or DEFAULT_LANG,
-    )
+    # kokoro-onnx and its phonemizer share mutable native state. The HTTP
+    # server may remain threaded for health checks, but synthesis must be
+    # serialized to keep parallel requests from corrupting phoneme output.
+    with kokoro_lock:
+        engine = get_kokoro()
+        samples, sample_rate = engine.create(
+            normalized,
+            voice=voice or DEFAULT_VOICE,
+            speed=speed or DEFAULT_SPEED,
+            lang=lang or DEFAULT_LANG,
+        )
 
     buffer = io.BytesIO()
     sf.write(buffer, np.asarray(samples, dtype=np.float32), int(sample_rate), format="WAV")
@@ -132,6 +138,13 @@ class KokoroHandler(BaseHTTPRequestHandler):
         print(f"[kokoro] {self.address_string()} - {format % args}")
 
 
+class KokoroHTTPServer(ThreadingHTTPServer):
+    # TCPServer defaults to a backlog of 5. A browser/app batch can open more
+    # sockets before the request threads reach the serialized synthesis lock,
+    # so keep enough pending connections for the bounded local workload.
+    request_queue_size = 64
+
+
 def main() -> None:
     global model_path, voices_path
 
@@ -147,7 +160,7 @@ def main() -> None:
 
     print("Loading Kokoro model and voices...", flush=True)
     get_kokoro()
-    server = ThreadingHTTPServer((args.host, args.port), KokoroHandler)
+    server = KokoroHTTPServer((args.host, args.port), KokoroHandler)
     print(f"Kokoro TTS server ready at http://{args.host}:{args.port}", flush=True)
     server.serve_forever()
 
