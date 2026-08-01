@@ -1,12 +1,38 @@
 ﻿import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { buildSpeakingSession, LADDER_STEPS } from "@/lib/speaking-practice";
+import { assertBackupCapacity } from "@/server/backup/backup";
 import { getStorageContext } from "@/server/storage";
 import { readJsonBody, isRecord, storageErrorResponse } from "@/server/storage/api";
 import { StorageError } from "@/server/storage/errors";
+import { MAX_STORED_SPEAKING_SESSIONS } from "@/server/storage/domain";
 import type { Lesson } from "@/types/lesson";
 
 const ratings = new Set(["hard", "okay", "easy"]);
+function assertSpeakingSessionCapacity(database: ReturnType<typeof getStorageContext>["database"]) {
+  const row = database.prepare("SELECT COUNT(*) count FROM speaking_sessions").get() as {
+    count: number;
+  };
+  if (Number(row.count) >= MAX_STORED_SPEAKING_SESSIONS)
+    throw new StorageError(
+      "VALIDATION_ERROR",
+      `Đã đạt giới hạn ${MAX_STORED_SPEAKING_SESSIONS} phiên nói có thể sao lưu.`,
+    );
+}
+function writeWithinBackupCapacity(
+  database: ReturnType<typeof getStorageContext>["database"],
+  operation: () => void,
+) {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    operation();
+    assertBackupCapacity(database);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
 interface DbSession {
   id: string;
   lesson_id: string;
@@ -155,10 +181,12 @@ export async function POST(request: Request) {
             "UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE id=? AND status='active'",
           ).run(now, active.id);
         }
+        assertSpeakingSessionCapacity(db);
         id = randomUUID();
         db.prepare(
           "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
         ).run(id, lesson.id, JSON.stringify([target.id]), now, now);
+        assertBackupCapacity(db);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
@@ -179,9 +207,12 @@ export async function POST(request: Request) {
         .get(lesson.id) as unknown as DbSession | undefined;
       if (!row) {
         const id = randomUUID();
-        db.prepare(
-          "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
-        ).run(id, lesson.id, JSON.stringify(tasks.map((x) => x.id)), now, now);
+        writeWithinBackupCapacity(db, () => {
+          assertSpeakingSessionCapacity(db);
+          db.prepare(
+            "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
+          ).run(id, lesson.id, JSON.stringify(tasks.map((x) => x.id)), now, now);
+        });
         row = db
           .prepare("SELECT * FROM speaking_sessions WHERE id=?")
           .get(id) as unknown as DbSession;
@@ -217,13 +248,16 @@ export async function POST(request: Request) {
       if (!chosen.length) chosen = tasks;
       if (!chosen.length)
         return NextResponse.json({ empty: true, lessonTitle: lesson.title, tasks: [] });
-      db.prepare(
-        "UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE lesson_id=? AND status='active'",
-      ).run(now, lesson.id);
       const id = randomUUID();
-      db.prepare(
-        "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
-      ).run(id, lesson.id, JSON.stringify(chosen.map((x) => x.id)), now, now);
+      writeWithinBackupCapacity(db, () => {
+        assertSpeakingSessionCapacity(db);
+        db.prepare(
+          "UPDATE speaking_sessions SET status='cancelled',updated_at=? WHERE lesson_id=? AND status='active'",
+        ).run(now, lesson.id);
+        db.prepare(
+          "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_step,status,created_at,updated_at) VALUES(?,?,?,'read','active',?,?)",
+        ).run(id, lesson.id, JSON.stringify(chosen.map((x) => x.id)), now, now);
+      });
       return NextResponse.json(
         response(
           lesson,
@@ -246,21 +280,27 @@ export async function POST(request: Request) {
       const draft = body.draft.trim();
       if (draft) drafts[itemId] = draft;
       else delete drafts[itemId];
-      db.prepare(
-        "UPDATE speaking_sessions SET drafts_json=?,updated_at=? WHERE id=? AND status='active'",
-      ).run(JSON.stringify(drafts), now, row.id);
+      writeWithinBackupCapacity(db, () => {
+        db.prepare(
+          "UPDATE speaking_sessions SET drafts_json=?,updated_at=? WHERE id=? AND status='active'",
+        ).run(JSON.stringify(drafts), now, row.id);
+      });
     } else if (body.action === "advance") {
       if (typeof body.step !== "string" || !LADDER_STEPS.some((step) => step === body.step))
         throw new StorageError("VALIDATION_ERROR", "Bậc luyện nói không hợp lệ.");
-      db.prepare(
-        "UPDATE speaking_sessions SET current_step=?,updated_at=? WHERE id=? AND status='active'",
-      ).run(body.step, now, row.id);
+      writeWithinBackupCapacity(db, () => {
+        db.prepare(
+          "UPDATE speaking_sessions SET current_step=?,updated_at=? WHERE id=? AND status='active'",
+        ).run(body.step, now, row.id);
+      });
     } else if (body.action === "show_answer") {
       const currentTask = tasks.find((x) => x.id === itemId);
       if (!currentTask) throw new StorageError("VALIDATION_ERROR", "Item không thuộc lesson.");
-      db.prepare(
-        "INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,'practicing',0,1,1,0,0,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET help_count=MAX(help_count,1),show_answer_count=MAX(show_answer_count,1),last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at",
-      ).run(lesson.id, itemId, currentTask.sourceType, currentTask.sourceItemId, now, now, now);
+      writeWithinBackupCapacity(db, () => {
+        db.prepare(
+          "INSERT INTO speaking_progress(lesson_id,practice_item_id,source_type,source_item_id,status,attempt_count,help_count,show_answer_count,recalled_count,personalized_count,first_practiced_at,last_practiced_at,updated_at) VALUES(?,?,?,?,'practicing',0,1,1,0,0,?,?,?) ON CONFLICT(lesson_id,practice_item_id) DO UPDATE SET help_count=MAX(help_count,1),show_answer_count=MAX(show_answer_count,1),last_practiced_at=excluded.last_practiced_at,updated_at=excluded.updated_at",
+        ).run(lesson.id, itemId, currentTask.sourceType, currentTask.sourceItemId, now, now, now);
+      });
     } else if (body.action === "complete_item") {
       if (typeof body.rating !== "string" || !ratings.has(body.rating))
         throw new StorageError("VALIDATION_ERROR", "Đánh giá không hợp lệ.");
@@ -294,6 +334,7 @@ export async function POST(request: Request) {
           db.prepare(
             "UPDATE speaking_sessions SET current_item_index=?,current_step='read',updated_at=? WHERE id=?",
           ).run(next, now, row.id);
+        assertBackupCapacity(db);
         db.exec("COMMIT");
       } catch (e) {
         db.exec("ROLLBACK");

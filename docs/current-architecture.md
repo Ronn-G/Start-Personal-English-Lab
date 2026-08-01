@@ -1,5 +1,10 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Backup Integrity v2: SQLite schema v11 adds Speaking integrity CHECK constraints without changing
+> ladder transitions. Backup format v2 includes exact source/transcript snapshots, strict Speaking
+> validation, idempotent lesson/session remap, per-type preview counts, and post-import verification.
+> Backup v1 remains importable with an explicit missing-source warning.
+
 > Immersion Listening Loop: SQLite schema v9 adds the explicit `saved_for_relisten` bookmark to the
 > v8 listening tables. `/api/listening` owns Start/Continue/Practice Again, step validation,
 > transcript reveal, objective counters, bookmarks, completion and saved-sentence dashboard review.
@@ -14,7 +19,7 @@
 
 > Sprint 5: SQLite schema v5 tracks filesystem audio cache metadata. Lesson UI uses a shared concurrency-1 client queue; Node audio routes own Kokoro generation, WAV validation, atomic file publication, serving, LRU cleanup and clear operations. Web Speech fallback now exists in runtime and is only invoked after a user click.
 
-> Sprint 4: SQLite schema v4 adds compact import receipts. `/api/backup/export` creates validated backup v1 snapshots; `/api/backup/import` provides dry-run, merge, and confirmed transactional replace. Backup/domain logic lives in `src/server/backup`, not React or route handlers.
+> Sprint 4 introduced compact import receipts and the original backup v1 flow. Backup/domain logic lives in `src/server/backup`, not React or route handlers.
 
 > Cập nhật Sprint 3 ngày 2026-07-16: SQLite schema v3 là source of truth cho thư viện Lesson và quiz progress; localStorage legacy chỉ được đọc cho migration có preview/xác nhận và không bị sửa/xóa.
 

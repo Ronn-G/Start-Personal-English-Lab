@@ -1,10 +1,12 @@
-# Data schemas (Sprint 2)
+# Data schemas
 
-Sprint 5 raises SQLite to **5** with `audio_cache`; WAV data and raw text are not stored in SQLite. Backup remains independently versioned at 1 and deliberately ignores this operational table.
+Four independent integer versions exist: SQLite database **11** (`PRAGMA user_version`), backup
+format **2** (`CURRENT_BACKUP_VERSION`), Lesson document **1**
+(`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1**
+(`CURRENT_PROGRESS_SCHEMA_VERSION`). Backup v1 remains readable for recovery compatibility.
 
-Sprint 4 adds a fourth independent version: backup format **1** (`CURRENT_BACKUP_VERSION`). SQLite is now **4**; Lesson and Progress remain **1**. Schema v4 adds `import_receipts(import_id, imported_at, source_fingerprint, mode, lesson_count, progress_count, result, warning_count)` and stores no backup blob.
-
-Four independent integer versions exist: SQLite database **5** (`PRAGMA user_version`), backup format **1** (`CURRENT_BACKUP_VERSION`), Lesson document **1** (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1** (`CURRENT_PROGRESS_SCHEMA_VERSION`).
+Schema v4 added compact `import_receipts`; v5 added operational `audio_cache`. WAV data, raw audio,
+secrets, and machine paths are never part of either backup version.
 
 ## Lesson v1 and stable IDs
 
@@ -60,7 +62,8 @@ string. SQLite repository áp dụng command bằng read-modify-write transactio
 
 # Immersion Listening Loop tables
 
-The current SQLite schema is **10**; backup, Lesson and Progress remain version **1**.
+Schemas v8-v10 introduced Listening, Re-listen bookmarks, and typed audio failures. Lesson and
+Progress remain version 1.
 
 Schema v8 adds `listening_sessions` and `listening_item_progress`.
 
@@ -81,7 +84,7 @@ does not infer bookmarks from legacy `difficult` rows and does not rebuild the t
 
 Schema v10 adds nullable `retryable`, `last_attempt_at`, `next_retry_at` and `error_summary` fields
 plus a retry index to the existing `audio_cache` table. It retains all cache rows and WAV files.
-Legacy failed rows become retryable Kokoro-unavailable entries; backup remains version 1 and still
+Legacy failed rows become retryable Kokoro-unavailable entries; backup still
 excludes operational audio metadata.
 
 The current listening UI and service write only objective counters/reveal/timestamps plus the
@@ -89,3 +92,18 @@ explicit bookmark. Existing `recognition_status`, `difficult` and
 `listening_sessions.final_relisten_rating` columns remain for database and backup compatibility but
 are legacy/currently unused. Backup v1 exports `savedForRelisten` as an optional field. Import treats
 its absence in older backups as `false`; merge preserves an explicitly newer bookmark value.
+
+# Backup v2 and Speaking integrity (Sprint: Backup Integrity v2)
+
+Backup v2 adds required `lessonSources`, one exact snapshot per stable lesson ID. The snapshot maps
+to the existing `lessons.source_title`, `source_url`, `source_channel`, `original_transcript`,
+`processed_transcript`, and `was_truncated` columns; no source field or author column is invented.
+`updatedAt` records snapshot recency for atomic newest-wins Merge policy. Backup v1 imports with an
+empty-source warning and explicit null/false defaults.
+
+SQLite schema v11 safely rebuilds only `speaking_progress` and `speaking_sessions` in the migration
+transaction. It validates old rows before DDL, copies all columns, and recreates primary keys,
+foreign keys, the last-practiced index, the one-active-session partial unique index, and the active
+session index. New CHECK constraints enforce non-negative Speaking counters and current item index,
+the source/status enums, and the five existing ladder steps. Invalid legacy data aborts and rolls
+the migration back to v10 unchanged. No Speaking Ladder transition behavior changes in v11.

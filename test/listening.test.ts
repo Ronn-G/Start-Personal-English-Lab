@@ -187,7 +187,7 @@ test("listening comprehension ranks and stable item IDs are strict and determini
   );
 });
 
-test("schema v9 migrates to v10 without losing legacy listening data and rolls back", () => {
+test("schema v9 migrates through v11 without losing legacy listening data and rolls back", () => {
   const database = databaseAt(9);
   const lesson = fixtureLesson();
   insertLesson(database, lesson);
@@ -207,7 +207,7 @@ test("schema v9 migrates to v10 without losing legacy listening data and rolls b
       lesson.updatedAt,
       lesson.updatedAt,
     );
-  assert.equal(runMigrations(database), 10);
+  assert.equal(runMigrations(database), 11);
   assert.equal(
     (
       database.prepare("SELECT title FROM lessons WHERE id=?").get(lesson.id) as {
@@ -222,7 +222,7 @@ test("schema v9 migrates to v10 without losing legacy listening data and rolls b
         user_version: number;
       }
     ).user_version,
-    10,
+    11,
   );
   const audioColumns = database
     .prepare("PRAGMA table_info(audio_cache)")
@@ -514,7 +514,7 @@ test("listening backup is optional, merges without lowering state, remaps confli
 
   const legacyPayload = {
     backupFormat: backup.backupFormat,
-    backupVersion: backup.backupVersion,
+    backupVersion: 1 as const,
     exportedAt: backup.exportedAt,
     appVersion: backup.appVersion,
     databaseSchemaVersion: backup.databaseSchemaVersion,

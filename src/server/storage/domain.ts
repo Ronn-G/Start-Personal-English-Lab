@@ -7,6 +7,9 @@ import {
 
 export const LESSON_SCHEMA_VERSION = CURRENT_LESSON_SCHEMA_VERSION;
 export const PROGRESS_SCHEMA_VERSION = CURRENT_PROGRESS_SCHEMA_VERSION;
+export const MAX_STORED_LESSONS = 500;
+export const MAX_STORED_SPEAKING_SESSIONS = 2_000;
+export const MAX_STORED_LISTENING_SESSIONS = 2_000;
 
 export interface LessonSource {
   title?: string;

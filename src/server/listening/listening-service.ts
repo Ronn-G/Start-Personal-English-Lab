@@ -11,7 +11,9 @@ import {
   type ListeningStep,
 } from "../../lib/listening-practice";
 import type { Lesson } from "../../types/lesson";
+import { assertBackupCapacity } from "../backup/backup";
 import { StorageError } from "../storage/errors";
+import { MAX_STORED_LISTENING_SESSIONS } from "../storage/domain";
 
 interface LessonRow {
   id: string;
@@ -318,6 +320,14 @@ export class ListeningService {
       if (active && !practiceAgain) {
         id = active.id;
       } else {
+        const sessionCount = this.database
+          .prepare("SELECT COUNT(*) count FROM listening_sessions")
+          .get() as { count: number };
+        if (Number(sessionCount.count) >= MAX_STORED_LISTENING_SESSIONS)
+          throw new StorageError(
+            "VALIDATION_ERROR",
+            `Đã đạt giới hạn ${MAX_STORED_LISTENING_SESSIONS} phiên nghe có thể sao lưu.`,
+          );
         if (active) {
           this.database
             .prepare(
@@ -334,6 +344,7 @@ export class ListeningService {
           )
           .run(id, lessonId, now, now);
       }
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -377,13 +388,15 @@ export class ListeningService {
     const firstNote = optionalNote(note);
     assertListeningTransition(row.current_step, "check_meaning");
     const now = new Date().toISOString();
-    this.database
-      .prepare(
-        `UPDATE listening_sessions
-         SET first_listen_comprehension=?,first_listen_note=?,current_step='check_meaning',updated_at=?
-         WHERE id=? AND lesson_id=? AND status='active' AND current_step='first_listen'`,
-      )
-      .run(comprehension, firstNote, now, sessionId, lessonId);
+    this.writeWithinBackupCapacity(() => {
+      this.database
+        .prepare(
+          `UPDATE listening_sessions
+           SET first_listen_comprehension=?,first_listen_note=?,current_step='check_meaning',updated_at=?
+           WHERE id=? AND lesson_id=? AND status='active' AND current_step='first_listen'`,
+        )
+        .run(comprehension, firstNote, now, sessionId, lessonId);
+    });
     return this.statusWithLesson(lesson, sessionId);
   }
 
@@ -403,11 +416,13 @@ export class ListeningService {
       throw new StorageError("CONFLICT", "Không thể bỏ qua bước luyện nghe.");
     }
     const now = new Date().toISOString();
-    this.database
-      .prepare(
-        "UPDATE listening_sessions SET current_step=?,updated_at=? WHERE id=? AND lesson_id=? AND status='active' AND current_step=?",
-      )
-      .run(target, now, sessionId, lessonId, row.current_step);
+    this.writeWithinBackupCapacity(() => {
+      this.database
+        .prepare(
+          "UPDATE listening_sessions SET current_step=?,updated_at=? WHERE id=? AND lesson_id=? AND status='active' AND current_step=?",
+        )
+        .run(target, now, sessionId, lessonId, row.current_step);
+    });
     return this.statusWithLesson(lesson, sessionId);
   }
 
@@ -420,13 +435,15 @@ export class ListeningService {
     }
     assertListeningTransition(row.current_step, "sentence_review");
     const now = new Date().toISOString();
-    this.database
-      .prepare(
-        `UPDATE listening_sessions
-         SET second_listen_comprehension=?,current_step='sentence_review',updated_at=?
-         WHERE id=? AND lesson_id=? AND status='active' AND current_step='second_listen'`,
-      )
-      .run(comprehension, now, sessionId, lessonId);
+    this.writeWithinBackupCapacity(() => {
+      this.database
+        .prepare(
+          `UPDATE listening_sessions
+           SET second_listen_comprehension=?,current_step='sentence_review',updated_at=?
+           WHERE id=? AND lesson_id=? AND status='active' AND current_step='second_listen'`,
+        )
+        .run(comprehension, now, sessionId, lessonId);
+    });
     return this.statusWithLesson(lesson, sessionId);
   }
 
@@ -458,6 +475,7 @@ export class ListeningService {
         listenDelta: 0,
         loopDelta: 0,
       });
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -485,6 +503,7 @@ export class ListeningService {
           loopDelta: 0,
         });
       }
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -512,7 +531,9 @@ export class ListeningService {
     this.requireStep(session, ["check_meaning", "sentence_review"]);
     const item = this.listeningItem(lesson, itemId);
     const now = new Date().toISOString();
-    this.upsertItem(item, now, { listenDelta, loopDelta, transcriptRevealed: false });
+    this.writeWithinBackupCapacity(() => {
+      this.upsertItem(item, now, { listenDelta, loopDelta, transcriptRevealed: false });
+    });
     return this.statusWithLesson(lesson, sessionId);
   }
 
@@ -537,6 +558,7 @@ export class ListeningService {
             updated_at=excluded.updated_at`,
         )
         .run(item.id, item.lessonId, item.sourceType, item.sourceItemId, saved ? 1 : 0, now);
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -604,6 +626,7 @@ export class ListeningService {
       if (Number(result.changes) !== 1) {
         throw new StorageError("CONFLICT", "Không thể hoàn thành phiên luyện nghe.");
       }
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -620,5 +643,17 @@ export class ListeningService {
       .prepare("SELECT * FROM listening_sessions WHERE id=?")
       .get(sessionId) as unknown as SessionRow;
     return this.response(lesson, row);
+  }
+
+  private writeWithinBackupCapacity(operation: () => void) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      operation();
+      assertBackupCapacity(this.database);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 }

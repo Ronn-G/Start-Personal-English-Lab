@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 10;
+export const CURRENT_DATABASE_VERSION = 11;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -317,6 +317,88 @@ export const MIGRATIONS: readonly Migration[] = [
 
         CREATE INDEX audio_cache_retry_idx
           ON audio_cache(status,retryable,next_retry_at);
+      `);
+    },
+  },
+  {
+    version: 11,
+    name: "speaking_integrity_checks",
+    up(database) {
+      const invalidProgress = database
+        .prepare(
+          `SELECT lesson_id,practice_item_id FROM speaking_progress
+           WHERE source_type NOT IN ('shadowing','example','sentence_mining','vocabulary')
+              OR status NOT IN ('new','practicing','recalled_with_help','recalled','personalized')
+              OR attempt_count < 0 OR help_count < 0 OR show_answer_count < 0
+              OR recalled_count < 0 OR personalized_count < 0
+           LIMIT 1`,
+        )
+        .get();
+      const invalidSession = database
+        .prepare(
+          `SELECT id FROM speaking_sessions
+           WHERE current_item_index < 0
+              OR current_step NOT IN ('read','recall','keywords','personalize','free_speak')
+              OR status NOT IN ('active','completed','cancelled')
+           LIMIT 1`,
+        )
+        .get();
+      if (invalidProgress || invalidSession)
+        throw new Error("Speaking data cũ không đạt ràng buộc schema v11.");
+
+      database.exec(`
+        CREATE TABLE speaking_progress_v11 (
+          lesson_id TEXT NOT NULL,
+          practice_item_id TEXT NOT NULL,
+          source_type TEXT NOT NULL CHECK(source_type IN (
+            'shadowing','example','sentence_mining','vocabulary'
+          )),
+          source_item_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN (
+            'new','practicing','recalled_with_help','recalled','personalized'
+          )),
+          attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+          help_count INTEGER NOT NULL DEFAULT 0 CHECK(help_count >= 0),
+          show_answer_count INTEGER NOT NULL DEFAULT 0 CHECK(show_answer_count >= 0),
+          recalled_count INTEGER NOT NULL DEFAULT 0 CHECK(recalled_count >= 0),
+          personalized_count INTEGER NOT NULL DEFAULT 0 CHECK(personalized_count >= 0),
+          self_rating TEXT CHECK(self_rating IN ('hard','okay','easy')),
+          first_practiced_at TEXT,
+          last_practiced_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(lesson_id,practice_item_id),
+          FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+        ) STRICT;
+
+        INSERT INTO speaking_progress_v11 SELECT * FROM speaking_progress;
+        DROP TABLE speaking_progress;
+        ALTER TABLE speaking_progress_v11 RENAME TO speaking_progress;
+        CREATE INDEX speaking_progress_last_idx ON speaking_progress(last_practiced_at);
+
+        CREATE TABLE speaking_sessions_v11 (
+          id TEXT PRIMARY KEY NOT NULL,
+          lesson_id TEXT NOT NULL,
+          item_ids_json TEXT NOT NULL CHECK(json_valid(item_ids_json)),
+          drafts_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(drafts_json)),
+          checks_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checks_json)),
+          current_item_index INTEGER NOT NULL DEFAULT 0 CHECK(current_item_index >= 0),
+          current_step TEXT NOT NULL CHECK(current_step IN (
+            'read','recall','keywords','personalize','free_speak'
+          )),
+          status TEXT NOT NULL CHECK(status IN ('active','completed','cancelled')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+        ) STRICT;
+
+        INSERT INTO speaking_sessions_v11 SELECT * FROM speaking_sessions;
+        DROP TABLE speaking_sessions;
+        ALTER TABLE speaking_sessions_v11 RENAME TO speaking_sessions;
+        CREATE UNIQUE INDEX speaking_one_active_session
+          ON speaking_sessions(lesson_id) WHERE status='active';
+        CREATE INDEX speaking_session_active_idx
+          ON speaking_sessions(lesson_id,status,updated_at);
       `);
     },
   },

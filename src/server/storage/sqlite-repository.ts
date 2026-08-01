@@ -9,6 +9,7 @@ import {
 } from "../../lib/lesson-progress";
 import {
   LESSON_SCHEMA_VERSION,
+  MAX_STORED_LESSONS,
   PROGRESS_SCHEMA_VERSION,
   type CreateLessonInput,
   type LessonProgressPayload,
@@ -20,6 +21,7 @@ import {
   type UpdateLessonInput,
 } from "./domain";
 import { StorageError } from "./errors";
+import { assertBackupCapacity } from "../backup/backup";
 import {
   assertValidId,
   assertValidLesson,
@@ -158,6 +160,14 @@ export class SqliteStorageRepository implements StorageRepository {
 
     this.database.exec("BEGIN IMMEDIATE");
     try {
+      const activeLessonCount = this.database
+        .prepare("SELECT COUNT(*) count FROM lessons WHERE deleted_at IS NULL")
+        .get() as { count: number };
+      if (Number(activeLessonCount.count) >= MAX_STORED_LESSONS)
+        throw new StorageError(
+          "VALIDATION_ERROR",
+          `Ứng dụng hỗ trợ tối đa ${MAX_STORED_LESSONS} bài học để luôn có thể sao lưu.`,
+        );
       this.database
         .prepare(
           `INSERT INTO lessons(
@@ -181,6 +191,7 @@ export class SqliteStorageRepository implements StorageRepository {
       if (input.initialProgress !== undefined) {
         this.insertProgress(id, input.initialProgress, PROGRESS_SCHEMA_VERSION, now);
       }
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -209,24 +220,32 @@ export class SqliteStorageRepository implements StorageRepository {
     }
     const updatedAt = new Date().toISOString();
 
-    this.database
-      .prepare(
-        `UPDATE lessons SET
-          schema_version = ?, title = ?, summary = ?, lesson_depth = ?, lesson_json = ?,
-          updated_at = ?, source_title = ?, source_url = ?, source_channel = ?,
-          original_transcript = ?, processed_transcript = ?, was_truncated = ?
-         WHERE id = ? AND deleted_at IS NULL`,
-      )
-      .run(
-        schemaVersion,
-        lesson.title.trim(),
-        lesson.summary.trim(),
-        input.lessonDepth === null ? null : (input.lessonDepth ?? existing.lessonDepth ?? null),
-        JSON.stringify(lesson),
-        updatedAt,
-        ...sourceParameters(source),
-        id,
-      );
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database
+        .prepare(
+          `UPDATE lessons SET
+            schema_version = ?, title = ?, summary = ?, lesson_depth = ?, lesson_json = ?,
+            updated_at = ?, source_title = ?, source_url = ?, source_channel = ?,
+            original_transcript = ?, processed_transcript = ?, was_truncated = ?
+           WHERE id = ? AND deleted_at IS NULL`,
+        )
+        .run(
+          schemaVersion,
+          lesson.title.trim(),
+          lesson.summary.trim(),
+          input.lessonDepth === null ? null : (input.lessonDepth ?? existing.lessonDepth ?? null),
+          JSON.stringify(lesson),
+          updatedAt,
+          ...sourceParameters(source),
+          id,
+        );
+      assertBackupCapacity(this.database);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
 
     return (await this.getLesson(id)) as StoredLesson;
   }
@@ -273,17 +292,25 @@ export class SqliteStorageRepository implements StorageRepository {
     }
 
     const now = new Date().toISOString();
-    this.database
-      .prepare(
-        `INSERT INTO lesson_progress(
-          lesson_id, progress_version, progress_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(lesson_id) DO UPDATE SET
-          progress_version = excluded.progress_version,
-          progress_json = excluded.progress_json,
-          updated_at = excluded.updated_at`,
-      )
-      .run(lessonId, progressVersion, JSON.stringify(progress), now, now);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database
+        .prepare(
+          `INSERT INTO lesson_progress(
+            lesson_id, progress_version, progress_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(lesson_id) DO UPDATE SET
+            progress_version = excluded.progress_version,
+            progress_json = excluded.progress_json,
+            updated_at = excluded.updated_at`,
+        )
+        .run(lessonId, progressVersion, JSON.stringify(progress), now, now);
+      assertBackupCapacity(this.database);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
     return (await this.getLessonProgress(lessonId)) as StoredLessonProgress;
   }
 
@@ -339,6 +366,7 @@ export class SqliteStorageRepository implements StorageRepository {
           row?.created_at ?? now,
           now,
         );
+      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");

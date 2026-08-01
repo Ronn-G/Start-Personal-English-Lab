@@ -43,11 +43,13 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 10; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 11; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
-Backup version 1 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson/progress và speaking
-progress/session. Backup không gồm audio cache, API key, environment hay metadata nhạy cảm.
+Backup version 2 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson, source/transcript,
+progress, Speaking, Listening và Re-listen bookmarks. Backup v1 cũ vẫn import được với cảnh báo
+source rỗng. Backup không gồm audio cache, API key, environment, machine path hay metadata nhạy cảm.
+Xem [backup and restore](docs/backup-and-restore.md).
 
 Kokoro chạy local tại `127.0.0.1:5050`; app lưu WAV và metadata trong audio cache. Server queue và
 Python synthesis lock serialize model calls. App health ở `/api/audio/health`; Web Speech chỉ là

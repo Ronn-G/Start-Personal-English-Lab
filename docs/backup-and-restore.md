@@ -1,55 +1,111 @@
-# Backup and restore (Sprint 4)
+# Backup and restore
 
-Sprint 5 audio cache files and SQLite `audio_cache` operational metadata remain excluded. Merge and Replace do not delete reusable text-keyed audio cache.
+Personal English Lab exports canonical UTF-8 JSON with
+`backupFormat: "personal-english-lab"` and `backupVersion: 2`. Backup version is independent from
+the app version, SQLite schema (v11), Lesson schema (v1), and Progress schema (v1).
 
-Personal English Lab exports one canonical UTF-8 JSON document with `backupFormat: "personal-english-lab"` and independent `backupVersion: 1`. Backup version is separate from app, SQLite (v4), Lesson (v1), and Progress (v1) versions. Future formats must use an explicit migration step; a newer unsupported version is rejected before any write.
+## What v2 contains
 
-The backup contains active canonical lessons, their stable lesson/item UUIDs, canonical progress, timestamps, source app/schema metadata, an empty allow-listed `settings` object, and a SHA-256 checksum over a deterministic canonical payload. It excludes soft-deleted lessons by default, API keys, environment variables/files, paths, logs, caches, audio/models, migration diagnostics, legacy localStorage and all credentials. Current localStorage theme/preferences are intentionally not backed up.
+- Canonical active lessons and stable lesson/item IDs.
+- Canonical lesson progress, including learning items, visited sections, practice history, and quiz
+  attempts.
+- One `lessonSources` snapshot per lesson, linked by stable `lessonId`. Its exact fields are
+  `title`, `url`, `channel`, `originalTranscript`, `processedTranscript`, `wasTruncated`, and
+  `updatedAt`. Nullable strings are represented explicitly as `null`.
+- Speaking progress and sessions, including session-scoped drafts and validated sentence checks.
+- Listening sessions, listening item progress, and `savedForRelisten` bookmarks.
+- Export/app/schema timestamps and an SHA-256 checksum over a deterministic canonical payload.
 
-## Restore flow
+The backup deliberately excludes API keys, environment files, machine/SQLite paths, WAV data,
+audio-cache metadata, Kokoro models, logs, temporary playback state, migration diagnostics, legacy
+localStorage, and credentials. Source validation accepts only HTTP(S) URLs and rejects unexpected
+fields and `data:audio/...` content.
 
-Choose a `.json` file of at most 8 MB. The browser parses it without logging or writing it, then sends the parsed object for a server dry-run. The server validates the envelope, versions, every lesson/progress record, duplicate IDs, orphan progress and checksum, and compares it with current SQLite data. The preview shows counts, duplicates, conflicts, source metadata and prior-import warnings.
+## Backward compatibility
 
-- **Merge:** new IDs are inserted; identical content is not duplicated. Same ID/different content is preserved as a second lesson under a fresh UUID, and its progress lesson ID is remapped. Stable item IDs remain unchanged. Progress resolution is a pure function: attempt counts never decrease, completion is never downgraded, and newer values win otherwise.
-- **Replace all:** only an entirely valid preview can proceed and UI requires final confirmation. The transaction deletes current lesson/progress rows, inserts the backup, validates written lessons, records a receipt, then commits. Any error rolls back the complete operation. Settings outside the backup, environment configuration and legacy localStorage are untouched.
+Version 1 remains importable. A v1 document has no reliable `lessonSources` contract, so source
+title/URL/channel/transcripts restore as empty and `wasTruncated` restores as `false`. Dry-run and
+the UI show an explicit warning before import. Missing optional Speaking or Listening collections
+still mean that the older backup contains no history for that feature. The original v1 checksum is
+verified before legacy Progress defaults are normalized.
 
-Successful imports store only a compact receipt (UUID, time, source checksum, mode, counts, result and warning count), never the backup blob. Re-importing the same checksum produces a warning and requires explicit confirmation. The checksum detects accidental corruption; it is not a signature, encryption, or protection against a maliciously crafted file.
+Version 2 requires exactly one source record for every lesson. Missing, duplicate, orphaned,
+oversized, machine-local, or structurally unknown source data makes dry-run invalid.
 
-To restore on a new machine, install/start the app, open **Sao lưu và khôi phục**, select the JSON, inspect the preview, then choose Replace all and confirm. Configure `GEMINI_API_KEY` separately because secrets are deliberately absent. Cloud sync, encryption, automatic backup and Anki export are outside Sprint 4. A clean extracted portable ZIP smoke test remains a release-time manual check.
+## Merge policy
 
-# Sprint 6 speaking compatibility
+- A lesson with no conflict keeps its stable ID.
+- Identical canonical content is deduplicated. A different incoming ID is remapped to the existing
+  lesson ID.
+- The same ID with different canonical content is assigned a fresh UUID, unless that exact content
+  was already imported; retries therefore remain idempotent.
+- Lesson source data follows the final lesson ID. Source metadata is one atomic snapshot: the newer
+  `updatedAt` wins as a whole. Fields are never mixed independently.
+- Lesson progress keeps monotonic attempts/completion/ranks. Speaking and Listening identities are
+  remapped through source type plus stable source-item ID.
+- Session IDs are preserved unless they collide with a different lesson. One active session per
+  lesson is retained according to documented progress/recency rules.
 
-Backup v1 now has optional `speakingProgress` and `speakingSessions` collections. Their absence means no speaking history, so pre-Sprint-6 backups remain valid. Counters merge by maximum, status by explicit rank, first practice by earliest timestamp, last/update by latest timestamp, and self-rating from the newest record. Lesson-ID conflicts remap item IDs through stable source type and source item ID. An active session is imported only when every reference remaps; between two active sessions, the farther session wins, then the newer one. Replace includes speaking rows in the existing transaction and never deletes audio cache.
+## Replace policy and verification
 
-# Personal sentence data
+Replace deletes and restores lessons, sources, Progress, Speaking, and Listening inside one
+`BEGIN IMMEDIATE` transaction. It does not delete device-local audio cache or settings outside the
+backup. Before commit, import verifies:
 
-Speaking sessions may contain optional per-item `drafts` and validated `checks`. Their keys are remapped with stable speaking item identities during import; old backups without these fields remain valid. Raw prompts, provider responses, secrets, and audio are never exported.
+- lesson and per-type record counts for Replace;
+- every source field against the selected source snapshot;
+- canonical Progress;
+- Speaking item/source identity, counters, session item/step/state shape, and one active session;
+- Listening item/source identity, counters, session state, and one active session;
+- foreign keys and absence of orphan records.
 
-# Sprint 8 lesson progress compatibility
+Any insert or verification error rolls back the entire operation. A success receipt is written only
+after these checks pass.
 
-Backup vẫn là version 1. Backup cũ thiếu `learningItems`, `visitedSections` hoặc `practiceHistory`
-được normalize thành collection rỗng sau khi checksum gốc được xác minh. Backup mới tự động chứa
-các field này trong Progress v1.
+## Validation and limits
 
-Merge dùng union section key; learning status dùng rank `new < learning < learned` nên không giảm;
-quiz giữ attempt lớn nhất và không hạ completion. Practice history union/deduplicate theo record UUID,
-chọn bản mới hơn khi trùng ID, sắp xếp ổn định theo thời gian và áp giới hạn 20 sau merge. Replace
-vẫn thay dữ liệu trong transaction và rollback toàn bộ khi lỗi. Speaking progress/session và audio
-cache giữ nguyên semantics.
+The exact serialized backup limit is **8,000,000 UTF-8 bytes**. Export validates this before returning
+a file. The import request limit is **8,064,000 bytes**, leaving explicit JSON-envelope overhead, and
+the browser rejects files above the backup limit before dry-run.
 
-# Immersion Listening Loop compatibility
+Every app write that can change backed-up state runs inside a transaction and validates the exact v2
+snapshot before commit. The write is rolled back if the resulting database would exceed 8,000,000
+bytes or fail backup validation. This also applies to Merge imports and legacy migration, so two
+individually valid databases cannot be combined into an unbackupable state.
 
-Backup v1 adds optional `listeningSessions` and `listeningItemProgress` collections. Their absence is
-valid and imports as no listening history, so older backups remain compatible. Audio WAV files,
-audio-cache metadata, machine paths and temporary playback state remain excluded.
+Collection limits are:
 
-Listening item remap uses source type plus stable source item UUID, then recalculates the listening
-item ID for the target lesson UUID. Invalid or orphan sources are rejected before import. Merge keeps
-maximum counters, unions aggregate transcript reveal, keeps completed sessions completed, and uses
-the explicitly newer `savedForRelisten` bookmark when present. The bookmark field is optional:
-older listening backups without it import as not saved. Legacy recognition, difficulty and final
-rating fields remain accepted/exported for compatibility but the current app does not depend on
-them.
-Only one active listening session is retained per lesson; the farther step wins, then the newer
-timestamp. Replace deletes and restores listening rows inside the existing import transaction, so an
-insert or verification failure rolls back lessons, lesson progress, speaking and listening together.
+- lessons, lesson sources, and lesson progress: 500 each;
+- Speaking progress: 5,000;
+- Speaking sessions: 2,000;
+- Listening sessions: 2,000;
+- Listening item progress: 25,000.
+
+The 500-lesson limit is enforced when a lesson is created. Speaking and Listening session limits are
+enforced when a new session is created. Item-progress ceilings cover the bounded set of source items
+available across 500 canonical lessons. Boundary tests cover limit minus one, exact limit, and limit
+plus one; byte tests use the same predicate as export/import validation.
+
+Transcripts are capped at 2,000,000 characters and 4,000,000 UTF-8 bytes per field; source labels,
+URLs, drafts, checks, hashes, and notes have smaller field-specific limits. Diagnostics name the
+exact JSON path (for example `$.lessonSources[2].originalTranscript` or
+`$.speakingSessions[1].currentStep`) and never include full transcript content.
+
+## Integrity and recovery drill
+
+The SHA-256 checksum detects accidental corruption. It is **not** a signature, encryption, or proof
+that a crafted file is trustworthy; all content is validated independently after checksum
+recalculation.
+
+Recovery drill:
+
+1. Export a v2 backup and keep the JSON file outside the app data directory.
+2. Open **Sao lưu và khôi phục**, select the file, and inspect version, source availability, all
+   per-type counts, conflicts, remaps, invalid records, and warnings.
+3. Choose Replace and confirm the explicit destructive prompt.
+4. Reopen the lesson and verify original/processed transcripts, source URL/title/channel,
+   `wasTruncated`, canonical lesson content, Progress, Speaking, Listening, and Re-listen bookmarks.
+5. Configure API keys separately; secrets are intentionally never restored.
+
+Audio cache and WAV files remain device-local and reusable across Merge/Replace. Portable packaging,
+cloud sync, encryption, and automatic scheduled backup remain outside this sprint.

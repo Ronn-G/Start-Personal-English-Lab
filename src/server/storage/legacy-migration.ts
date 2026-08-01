@@ -9,6 +9,7 @@ import {
 import { normalizeLesson, validateCanonicalLesson, type Diagnostic } from "../../lib/lesson-schema";
 import type { LegacyMigrationRecord } from "../../lib/legacy-storage-reader";
 import type { Lesson } from "../../types/lesson";
+import { assertBackupCapacity } from "../backup/backup";
 import { StorageError } from "./errors";
 
 export const LEGACY_MIGRATION_ID = "localstorage-lessons-v1";
@@ -379,6 +380,7 @@ export function commitLegacyMigration(
       fingerprintCount: preview.items.filter((item) => item.fingerprint).length,
     };
     writeStatus(database, status, completedAt);
+    assertBackupCapacity(database);
     database.exec("COMMIT");
     return { preview, status };
   } catch (error) {

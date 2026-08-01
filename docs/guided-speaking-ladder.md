@@ -6,7 +6,7 @@ Candidates are selected from shadowing lines, useful example sentences, sentence
 
 The five steps are Read, Recall, Keywords, Personalize, and Free Speak. Recall masks a target phrase when available. Keywords retain only a small set of content cues. Personalize uses a conservative local pattern or a change-one-part fallback. At least one item in a non-empty session includes Free Speak.
 
-Speaking storage was finalized in SQLite schema v7; the current database schema is v8. Per-item
+Speaking storage was finalized in SQLite schema v7; the current database schema is v11. Per-item
 status, monotonic counters, explicit self-rating and timestamps remain in `speaking_progress`.
 `speaking_sessions` stores lesson/item references and the current item/step. Version 7 safely repairs
 databases created by an intermediate Sprint 6 build that omitted draft/check or source-item columns.

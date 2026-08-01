@@ -1,5 +1,11 @@
 # SQLite Storage Architecture
 
+> Backup Integrity v2: schema v11 rebuilds the two Speaking tables transactionally after validating
+> legacy rows, then adds CHECK constraints for counters, source/status enums, current index, and the
+> existing ladder steps. Backup format v2 stores one exact lesson-source snapshot per lesson and
+> verifies source, Progress, Speaking, Listening, active-session uniqueness, and foreign keys before
+> import commit. Backup v1 remains readable with empty-source defaults.
+
 > Schema v9 adds an indexed `saved_for_relisten` bookmark to the v8 listening tables. Schema v10
 > adds typed retry/cooldown metadata to `audio_cache` without deleting rows or WAV files. Listening
 > commands resolve lesson/source identity server-side, enforce one active session per lesson,

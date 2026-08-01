@@ -10,7 +10,17 @@ import {
 import type { Lesson } from "../../types/lesson";
 import { CURRENT_LESSON_SCHEMA_VERSION } from "../../types/lesson";
 import { CURRENT_DATABASE_VERSION } from "../storage/migrations";
-import { extractPracticeCandidates } from "../../lib/speaking-practice";
+import { StorageError } from "../storage/errors";
+import {
+  MAX_STORED_LESSONS,
+  MAX_STORED_LISTENING_SESSIONS,
+  MAX_STORED_SPEAKING_SESSIONS,
+} from "../storage/domain";
+import {
+  LADDER_STEPS,
+  buildSpeakingSession,
+  extractPracticeCandidates,
+} from "../../lib/speaking-practice";
 import {
   COMPREHENSION_LEVELS,
   FINAL_RELISTEN_RATINGS,
@@ -23,18 +33,42 @@ import {
 } from "../../lib/listening-practice";
 
 export const BACKUP_FORMAT = "personal-english-lab";
-export const CURRENT_BACKUP_VERSION = 1;
+export const CURRENT_BACKUP_VERSION = 2;
 export const MAX_BACKUP_BYTES = 8_000_000;
+export const MAX_IMPORT_REQUEST_BYTES = MAX_BACKUP_BYTES + 64_000;
+export const MAX_LESSON_COUNT = MAX_STORED_LESSONS;
+export const MAX_SPEAKING_PROGRESS_COUNT = 5_000;
+export const MAX_SPEAKING_SESSION_COUNT = MAX_STORED_SPEAKING_SESSIONS;
+export const MAX_LISTENING_SESSION_COUNT = MAX_STORED_LISTENING_SESSIONS;
+export const MAX_LISTENING_PROGRESS_COUNT = 25_000;
+
+const MAX_SOURCE_LABEL_CHARS = 500;
+const MAX_SOURCE_URL_CHARS = 2_048;
+const MAX_SOURCE_TRANSCRIPT_CHARS = 2_000_000;
+const MAX_SOURCE_TRANSCRIPT_BYTES = 4_000_000;
+const MAX_SPEAKING_TEXT_CHARS = 500;
+const SHA256 = /^[0-9a-f]{64}$/i;
+const SPEAKING_STATUSES = [
+  "new",
+  "practicing",
+  "recalled_with_help",
+  "recalled",
+  "personalized",
+] as const;
+const SESSION_STATUSES = ["active", "completed", "cancelled"] as const;
+const SELF_RATINGS = ["hard", "okay", "easy"] as const;
+const SENTENCE_CHECK_VERDICTS = ["clear", "needs_small_fix", "needs_rewrite", "unclear"] as const;
 
 export interface BackupDocument {
   backupFormat: typeof BACKUP_FORMAT;
-  backupVersion: 1;
+  backupVersion: 1 | 2;
   exportedAt: string;
   appVersion: string;
   databaseSchemaVersion: number;
   lessonSchemaVersion: number;
   progressSchemaVersion: number;
   lessons: Lesson[];
+  lessonSources?: LessonSourceBackup[];
   progress: LessonProgress[];
   settings: Record<string, never>;
   speakingProgress?: SpeakingProgressBackup[];
@@ -42,6 +76,16 @@ export interface BackupDocument {
   listeningSessions?: ListeningSessionBackup[];
   listeningItemProgress?: ListeningItemProgressBackup[];
   integrity: { algorithm: "SHA-256"; checksum: string };
+}
+export interface LessonSourceBackup {
+  lessonId: string;
+  title: string | null;
+  url: string | null;
+  channel: string | null;
+  originalTranscript: string | null;
+  processedTranscript: string | null;
+  wasTruncated: boolean;
+  updatedAt: string;
 }
 export interface SpeakingProgressBackup {
   lessonId: string;
@@ -108,15 +152,22 @@ export interface BackupDiagnostic {
 }
 export interface ImportPreview {
   valid: boolean;
+  backupVersion?: number;
   exportedAt?: string;
   appVersion?: string;
   databaseSchemaVersion?: number;
   lessonCount: number;
+  lessonSourceCount: number;
   progressCount: number;
+  speakingProgressCount: number;
+  speakingSessionCount: number;
+  listeningSessionCount: number;
+  listeningItemProgressCount: number;
   validRecords: number;
   invalidRecords: number;
   duplicates: number;
   conflicts: number;
+  remaps: number;
   newLessons: number;
   updatedLessons: number;
   previouslyImported: boolean;
@@ -128,7 +179,9 @@ type BareBackup = Omit<BackupDocument, "integrity">;
 const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const iso = (value: unknown): value is string =>
-  typeof value === "string" && !Number.isNaN(Date.parse(value));
+  typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+  !Number.isNaN(Date.parse(value));
 const nonNegativeInteger = (value: unknown): value is number =>
   Number.isInteger(value) && Number(value) >= 0;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -140,6 +193,141 @@ function stable(value: unknown): string {
       .map((k) => `${JSON.stringify(k)}:${stable(value[k])}`)
       .join(",")}}`;
   return JSON.stringify(value);
+}
+export function serializedUtf8Bytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+export function isBackupByteLengthAllowed(bytes: number): boolean {
+  return Number.isInteger(bytes) && bytes >= 0 && bytes <= MAX_BACKUP_BYTES;
+}
+export function isBackupCollectionCountAllowed(count: number, limit: number): boolean {
+  return Number.isInteger(count) && count >= 0 && count <= limit;
+}
+function hasExactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  const expected = [...allowed].sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const keys = new Set(allowed);
+  return Object.keys(value).every((key) => keys.has(key));
+}
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+const SOURCE_KEYS = [
+  "lessonId",
+  "title",
+  "url",
+  "channel",
+  "originalTranscript",
+  "processedTranscript",
+  "wasTruncated",
+  "updatedAt",
+] as const;
+const SPEAKING_PROGRESS_KEYS = [
+  "lessonId",
+  "practiceItemId",
+  "sourceType",
+  "sourceItemId",
+  "status",
+  "attemptCount",
+  "helpCount",
+  "showAnswerCount",
+  "recalledCount",
+  "personalizedCount",
+  "selfRating",
+  "firstPracticedAt",
+  "lastPracticedAt",
+  "updatedAt",
+] as const;
+const SPEAKING_SESSION_KEYS = [
+  "id",
+  "lessonId",
+  "itemIds",
+  "drafts",
+  "checks",
+  "currentItemIndex",
+  "currentStep",
+  "status",
+  "createdAt",
+  "updatedAt",
+  "completedAt",
+] as const;
+const SENTENCE_CHECK_KEYS = [
+  "understandable",
+  "verdict",
+  "correctedSentence",
+  "naturalAlternative",
+  "explanationVi",
+  "inputHash",
+  "inputText",
+  "checkedAt",
+] as const;
+const BACKUP_KEYS = [
+  "backupFormat",
+  "backupVersion",
+  "exportedAt",
+  "appVersion",
+  "databaseSchemaVersion",
+  "lessonSchemaVersion",
+  "progressSchemaVersion",
+  "lessons",
+  "lessonSources",
+  "progress",
+  "settings",
+  "speakingProgress",
+  "speakingSessions",
+  "listeningSessions",
+  "listeningItemProgress",
+  "integrity",
+] as const;
+
+function validNullableText(
+  value: unknown,
+  maxChars: number,
+  maxBytes = maxChars * 4,
+): value is string | null {
+  return (
+    value === null ||
+    (typeof value === "string" && value.length <= maxChars && utf8Bytes(value) <= maxBytes)
+  );
+}
+
+function validWebUrl(value: unknown): value is string | null {
+  if (value === null) return true;
+  if (typeof value !== "string" || value.length > MAX_SOURCE_URL_CHARS || utf8Bytes(value) > 8_192)
+    return false;
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol) && !/^[A-Za-z]:[\\/]|^\\\\/.test(value);
+  } catch {
+    return false;
+  }
+}
+
+function validSentenceCheck(value: unknown): boolean {
+  if (!record(value) || !hasExactKeys(value, SENTENCE_CHECK_KEYS)) return false;
+  return (
+    typeof value.understandable === "boolean" &&
+    SENTENCE_CHECK_VERDICTS.includes(value.verdict as (typeof SENTENCE_CHECK_VERDICTS)[number]) &&
+    typeof value.correctedSentence === "string" &&
+    value.correctedSentence.length > 0 &&
+    value.correctedSentence.length <= MAX_SPEAKING_TEXT_CHARS &&
+    (value.naturalAlternative === null ||
+      (typeof value.naturalAlternative === "string" &&
+        value.naturalAlternative.length > 0 &&
+        value.naturalAlternative.length <= MAX_SPEAKING_TEXT_CHARS)) &&
+    typeof value.explanationVi === "string" &&
+    value.explanationVi.length > 0 &&
+    value.explanationVi.length <= MAX_SPEAKING_TEXT_CHARS &&
+    typeof value.inputText === "string" &&
+    value.inputText.length > 0 &&
+    value.inputText.length <= MAX_SPEAKING_TEXT_CHARS &&
+    typeof value.inputHash === "string" &&
+    SHA256.test(value.inputHash) &&
+    iso(value.checkedAt)
+  );
 }
 export function checksum(payload: BareBackup): string {
   return createHash("sha256").update(stable(payload), "utf8").digest("hex");
@@ -164,6 +352,7 @@ function bare(document: BackupDocument): BareBackup {
     progress: document.progress,
     settings: document.settings,
   };
+  if (document.lessonSources !== undefined) result.lessonSources = document.lessonSources;
   if (document.speakingProgress !== undefined) result.speakingProgress = document.speakingProgress;
   if (document.speakingSessions !== undefined) result.speakingSessions = document.speakingSessions;
   if (document.listeningSessions !== undefined)
@@ -184,13 +373,35 @@ export function validateBackup(value: unknown): {
         { code: "INVALID_BACKUP", path: "$", message: "Backup phải là một đối tượng JSON." },
       ],
     };
+  let serializedBytes = Number.POSITIVE_INFINITY;
+  try {
+    serializedBytes = serializedUtf8Bytes(value);
+  } catch {
+    d.push({
+      code: "INVALID_BACKUP",
+      path: "$",
+      message: "Backup không thể chuyển thành JSON hợp lệ.",
+    });
+  }
+  if (!isBackupByteLengthAllowed(serializedBytes))
+    d.push({
+      code: "BACKUP_TOO_LARGE",
+      path: "$",
+      message: `Backup vượt quá giới hạn ${MAX_BACKUP_BYTES} byte.`,
+    });
   if (value.backupFormat !== BACKUP_FORMAT)
     d.push({ code: "INVALID_FORMAT", path: "$.backupFormat", message: "Sai định dạng backup." });
-  if (value.backupVersion !== CURRENT_BACKUP_VERSION)
+  if (value.backupVersion !== 1 && value.backupVersion !== CURRENT_BACKUP_VERSION)
     d.push({
       code: "UNSUPPORTED_BACKUP_VERSION",
       path: "$.backupVersion",
-      message: `Chỉ hỗ trợ backup version ${CURRENT_BACKUP_VERSION}.`,
+      message: `Chỉ hỗ trợ backup version 1 hoặc ${CURRENT_BACKUP_VERSION}.`,
+    });
+  if (!hasOnlyKeys(value, BACKUP_KEYS))
+    d.push({
+      code: "INVALID_BACKUP_KEYS",
+      path: "$",
+      message: "Backup có field cấp cao nhất không được hỗ trợ.",
     });
   for (const key of [
     "exportedAt",
@@ -205,16 +416,60 @@ export function validateBackup(value: unknown): {
   ])
     if (!(key in value))
       d.push({ code: "MISSING_FIELD", path: `$.${key}`, message: `Thiếu trường ${key}.` });
+  if (!iso(value.exportedAt))
+    d.push({
+      code: "INVALID_EXPORTED_AT",
+      path: "$.exportedAt",
+      message: "exportedAt phải là timestamp ISO hợp lệ.",
+    });
+  if (
+    typeof value.appVersion !== "string" ||
+    value.appVersion.length === 0 ||
+    value.appVersion.length > 100
+  )
+    d.push({
+      code: "INVALID_APP_VERSION",
+      path: "$.appVersion",
+      message: "appVersion không hợp lệ.",
+    });
+  if (!nonNegativeInteger(value.databaseSchemaVersion))
+    d.push({
+      code: "INVALID_DATABASE_VERSION",
+      path: "$.databaseSchemaVersion",
+      message: "databaseSchemaVersion không hợp lệ.",
+    });
+  if (!record(value.settings) || Object.keys(value.settings).length !== 0)
+    d.push({
+      code: "INVALID_SETTINGS",
+      path: "$.settings",
+      message: "Backup chỉ hỗ trợ settings allow-list rỗng.",
+    });
   if (
     !Array.isArray(value.lessons) ||
     !Array.isArray(value.progress) ||
-    value.lessons?.length > 500 ||
-    value.progress?.length > 500
+    !isBackupCollectionCountAllowed(value.lessons?.length, MAX_LESSON_COUNT) ||
+    !isBackupCollectionCountAllowed(value.progress?.length, MAX_LESSON_COUNT)
   )
     d.push({
       code: "INVALID_COLLECTION",
       path: "$",
-      message: "Danh sách bài học/tiến độ không hợp lệ hoặc có quá 500 bản ghi.",
+      message: `Danh sách bài học/tiến độ không hợp lệ hoặc có quá ${MAX_LESSON_COUNT} bản ghi.`,
+    });
+  if (value.backupVersion === 2 && !Array.isArray(value.lessonSources))
+    d.push({
+      code: "MISSING_LESSON_SOURCES",
+      path: "$.lessonSources",
+      message: "Backup v2 phải có danh sách nguồn bài học.",
+    });
+  if (
+    value.lessonSources !== undefined &&
+    (!Array.isArray(value.lessonSources) ||
+      !isBackupCollectionCountAllowed(value.lessonSources.length, MAX_LESSON_COUNT))
+  )
+    d.push({
+      code: "INVALID_LESSON_SOURCES",
+      path: "$.lessonSources",
+      message: `Danh sách nguồn bài học không hợp lệ hoặc có quá ${MAX_LESSON_COUNT} bản ghi.`,
     });
   if (value.lessonSchemaVersion !== 1 || value.progressSchemaVersion !== 1)
     d.push({
@@ -224,6 +479,14 @@ export function validateBackup(value: unknown): {
     });
   const ids = new Set<string>();
   const itemIds = new Map<string, Set<string>>();
+  const speakingItems = new Map<
+    string,
+    Map<string, ReturnType<typeof extractPracticeCandidates>[number]>
+  >();
+  const speakingTasks = new Map<
+    string,
+    Map<string, ReturnType<typeof buildSpeakingSession>[number]>
+  >();
   const listeningItems = new Map<
     string,
     Map<string, ReturnType<typeof extractListeningItems>[number]>
@@ -264,8 +527,97 @@ export function validateBackup(value: unknown): {
           data.id,
           new Map(extractListeningItems(data).map((item) => [item.id, item])),
         );
+        speakingItems.set(
+          data.id,
+          new Map(extractPracticeCandidates(data).map((item) => [item.id, item])),
+        );
+        speakingTasks.set(
+          data.id,
+          new Map(buildSpeakingSession(data).map((item) => [item.id, item])),
+        );
       }
     });
+  if (Array.isArray(value.lessonSources)) {
+    const sourceLessonIds = new Set<string>();
+    value.lessonSources.forEach((source, index) => {
+      const path = `$.lessonSources[${index}]`;
+      if (!record(source)) {
+        d.push({ code: "INVALID_LESSON_SOURCE", path, message: "Nguồn bài học phải là object." });
+        return;
+      }
+      if (!hasExactKeys(source, SOURCE_KEYS))
+        d.push({
+          code: "INVALID_LESSON_SOURCE_KEYS",
+          path,
+          message: "Nguồn bài học có field thiếu hoặc không được hỗ trợ.",
+        });
+      const lessonId = typeof source.lessonId === "string" ? source.lessonId : "";
+      if (!UUID.test(lessonId) || !ids.has(lessonId))
+        d.push({
+          code: "ORPHAN_LESSON_SOURCE",
+          path: `${path}.lessonId`,
+          message: "Nguồn không tham chiếu tới lesson hợp lệ trong backup.",
+        });
+      else if (sourceLessonIds.has(lessonId))
+        d.push({
+          code: "DUPLICATE_LESSON_SOURCE",
+          path: `${path}.lessonId`,
+          message: "Lesson có nhiều hơn một bản ghi nguồn.",
+        });
+      else sourceLessonIds.add(lessonId);
+      for (const field of ["title", "channel"] as const)
+        if (!validNullableText(source[field], MAX_SOURCE_LABEL_CHARS, 2_000))
+          d.push({
+            code: "INVALID_LESSON_SOURCE_FIELD",
+            path: `${path}.${field}`,
+            message: `${field} phải là chuỗi/null trong giới hạn cho phép.`,
+          });
+      if (!validWebUrl(source.url))
+        d.push({
+          code: "INVALID_LESSON_SOURCE_URL",
+          path: `${path}.url`,
+          message: "URL nguồn phải là HTTP(S), không phải đường dẫn máy cục bộ.",
+        });
+      for (const field of ["originalTranscript", "processedTranscript"] as const) {
+        const transcript = source[field];
+        if (
+          !validNullableText(transcript, MAX_SOURCE_TRANSCRIPT_CHARS, MAX_SOURCE_TRANSCRIPT_BYTES)
+        )
+          d.push({
+            code: "INVALID_LESSON_TRANSCRIPT",
+            path: `${path}.${field}`,
+            message: `${field} phải là chuỗi/null trong giới hạn cho phép.`,
+          });
+        else if (typeof transcript === "string" && /^data:audio\//i.test(transcript.trim()))
+          d.push({
+            code: "BINARY_AUDIO_NOT_ALLOWED",
+            path: `${path}.${field}`,
+            message: "Backup không được chứa audio/base64.",
+          });
+      }
+      if (typeof source.wasTruncated !== "boolean")
+        d.push({
+          code: "INVALID_LESSON_SOURCE_FIELD",
+          path: `${path}.wasTruncated`,
+          message: "wasTruncated phải là boolean.",
+        });
+      if (!iso(source.updatedAt))
+        d.push({
+          code: "INVALID_LESSON_SOURCE_TIMESTAMP",
+          path: `${path}.updatedAt`,
+          message: "updatedAt của nguồn không hợp lệ.",
+        });
+    });
+    if (value.backupVersion === 2)
+      for (const lessonId of ids)
+        if (!sourceLessonIds.has(lessonId))
+          d.push({
+            code: "MISSING_LESSON_SOURCE",
+            path: "$.lessonSources",
+            message: `Thiếu bản ghi nguồn cho lesson ${lessonId}.`,
+          });
+  }
+  const progressLessonIds = new Set<string>();
   if (Array.isArray(value.progress))
     value.progress.forEach((progress, i) => {
       const lessonId =
@@ -283,9 +635,16 @@ export function validateBackup(value: unknown): {
           path: `$.progress[${i}].lessonId`,
           message: "Tiến độ không có bài học tương ứng.",
         });
+      else if (progressLessonIds.has(result.data!.lessonId))
+        d.push({
+          code: "DUPLICATE_PROGRESS",
+          path: `$.progress[${i}].lessonId`,
+          message: "Lesson có nhiều hơn một progress record.",
+        });
       else {
         const data = result.data!,
           allowed = itemIds.get(data.lessonId)!;
+        progressLessonIds.add(data.lessonId);
         const bad = [
           ...Object.keys(data.quizItems),
           ...Object.keys(data.learningItems),
@@ -300,8 +659,302 @@ export function validateBackup(value: unknown): {
       }
     });
   if (
+    value.speakingProgress !== undefined &&
+    (!Array.isArray(value.speakingProgress) ||
+      !isBackupCollectionCountAllowed(value.speakingProgress.length, MAX_SPEAKING_PROGRESS_COUNT))
+  )
+    d.push({
+      code: "INVALID_SPEAKING_PROGRESS_COLLECTION",
+      path: "$.speakingProgress",
+      message: `Danh sách tiến độ nói không hợp lệ hoặc có quá ${MAX_SPEAKING_PROGRESS_COUNT} bản ghi.`,
+    });
+  if (Array.isArray(value.speakingProgress)) {
+    const identities = new Set<string>();
+    value.speakingProgress.forEach((progress, index) => {
+      const path = `$.speakingProgress[${index}]`;
+      if (!record(progress)) {
+        d.push({ code: "INVALID_SPEAKING_PROGRESS", path, message: "Tiến độ nói phải là object." });
+        return;
+      }
+      const required = SPEAKING_PROGRESS_KEYS.filter(
+        (key) => !["selfRating", "firstPracticedAt", "lastPracticedAt"].includes(key),
+      );
+      if (
+        !hasOnlyKeys(progress, SPEAKING_PROGRESS_KEYS) ||
+        required.some((key) => !(key in progress))
+      )
+        d.push({
+          code: "INVALID_SPEAKING_PROGRESS_KEYS",
+          path,
+          message: "Tiến độ nói có field thiếu hoặc không được hỗ trợ.",
+        });
+      const lessonId = typeof progress.lessonId === "string" ? progress.lessonId : "";
+      if (!UUID.test(lessonId) || !ids.has(lessonId))
+        d.push({
+          code: "ORPHAN_SPEAKING_PROGRESS",
+          path: `${path}.lessonId`,
+          message: "Tiến độ nói không thuộc lesson trong backup.",
+        });
+      const practiceItemId =
+        typeof progress.practiceItemId === "string" ? progress.practiceItemId : "";
+      const target = speakingItems.get(lessonId)?.get(practiceItemId);
+      if (!target)
+        d.push({
+          code: "INVALID_SPEAKING_SOURCE",
+          path: `${path}.practiceItemId`,
+          message: "Practice item không thuộc lesson.",
+        });
+      else if (
+        progress.sourceType !== target.sourceType ||
+        progress.sourceItemId !== target.sourceItemId
+      )
+        d.push({
+          code: "INVALID_SPEAKING_SOURCE",
+          path: `${path}.sourceItemId`,
+          message: "Source identity không khớp practice item của lesson.",
+        });
+      const identity = `${lessonId}|${practiceItemId}`;
+      if (identities.has(identity))
+        d.push({
+          code: "DUPLICATE_SPEAKING_PROGRESS",
+          path: `${path}.practiceItemId`,
+          message: "Practice item bị trùng trong tiến độ nói.",
+        });
+      else identities.add(identity);
+      if (
+        typeof progress.sourceType !== "string" ||
+        !["shadowing", "example", "sentence_mining", "vocabulary"].includes(progress.sourceType)
+      )
+        d.push({
+          code: "INVALID_SPEAKING_SOURCE_TYPE",
+          path: `${path}.sourceType`,
+          message: "sourceType không hợp lệ.",
+        });
+      if (!SPEAKING_STATUSES.includes(progress.status as (typeof SPEAKING_STATUSES)[number]))
+        d.push({
+          code: "INVALID_SPEAKING_STATUS",
+          path: `${path}.status`,
+          message: "Speaking status không hợp lệ.",
+        });
+      for (const field of [
+        "attemptCount",
+        "helpCount",
+        "showAnswerCount",
+        "recalledCount",
+        "personalizedCount",
+      ] as const)
+        if (!nonNegativeInteger(progress[field]))
+          d.push({
+            code: "INVALID_SPEAKING_COUNTER",
+            path: `${path}.${field}`,
+            message: `${field} phải là số nguyên không âm.`,
+          });
+      if (
+        progress.selfRating !== undefined &&
+        !SELF_RATINGS.includes(progress.selfRating as (typeof SELF_RATINGS)[number])
+      )
+        d.push({
+          code: "INVALID_SPEAKING_RATING",
+          path: `${path}.selfRating`,
+          message: "Self-rating không hợp lệ.",
+        });
+      for (const field of ["firstPracticedAt", "lastPracticedAt"] as const)
+        if (progress[field] !== undefined && !iso(progress[field]))
+          d.push({
+            code: "INVALID_SPEAKING_TIMESTAMP",
+            path: `${path}.${field}`,
+            message: `${field} không phải timestamp ISO hợp lệ.`,
+          });
+      if (!iso(progress.updatedAt))
+        d.push({
+          code: "INVALID_SPEAKING_TIMESTAMP",
+          path: `${path}.updatedAt`,
+          message: "updatedAt không phải timestamp ISO hợp lệ.",
+        });
+    });
+  }
+  if (
+    value.speakingSessions !== undefined &&
+    (!Array.isArray(value.speakingSessions) ||
+      !isBackupCollectionCountAllowed(value.speakingSessions.length, MAX_SPEAKING_SESSION_COUNT))
+  )
+    d.push({
+      code: "INVALID_SPEAKING_SESSION_COLLECTION",
+      path: "$.speakingSessions",
+      message: `Danh sách phiên nói không hợp lệ hoặc có quá ${MAX_SPEAKING_SESSION_COUNT} bản ghi.`,
+    });
+  if (Array.isArray(value.speakingSessions)) {
+    const sessionIds = new Set<string>();
+    const activeLessons = new Set<string>();
+    value.speakingSessions.forEach((session, index) => {
+      const path = `$.speakingSessions[${index}]`;
+      if (!record(session)) {
+        d.push({ code: "INVALID_SPEAKING_SESSION", path, message: "Phiên nói phải là object." });
+        return;
+      }
+      const required = SPEAKING_SESSION_KEYS.filter(
+        (key) => !["drafts", "checks", "completedAt"].includes(key),
+      );
+      if (!hasOnlyKeys(session, SPEAKING_SESSION_KEYS) || required.some((key) => !(key in session)))
+        d.push({
+          code: "INVALID_SPEAKING_SESSION_KEYS",
+          path,
+          message: "Phiên nói có field thiếu hoặc không được hỗ trợ.",
+        });
+      const sessionId = typeof session.id === "string" ? session.id : "";
+      if (!UUID.test(sessionId))
+        d.push({
+          code: "INVALID_SPEAKING_SESSION_ID",
+          path: `${path}.id`,
+          message: "Session ID không hợp lệ.",
+        });
+      else if (sessionIds.has(sessionId))
+        d.push({
+          code: "DUPLICATE_SPEAKING_SESSION_ID",
+          path: `${path}.id`,
+          message: "Session ID bị trùng trong backup.",
+        });
+      else sessionIds.add(sessionId);
+      const lessonId = typeof session.lessonId === "string" ? session.lessonId : "";
+      if (!UUID.test(lessonId) || !ids.has(lessonId))
+        d.push({
+          code: "ORPHAN_SPEAKING_SESSION",
+          path: `${path}.lessonId`,
+          message: "Phiên nói không thuộc lesson trong backup.",
+        });
+      const status = session.status;
+      if (!SESSION_STATUSES.includes(status as (typeof SESSION_STATUSES)[number]))
+        d.push({
+          code: "INVALID_SPEAKING_SESSION_STATUS",
+          path: `${path}.status`,
+          message: "Session status không hợp lệ.",
+        });
+      if (status === "active") {
+        if (activeLessons.has(lessonId))
+          d.push({
+            code: "DUPLICATE_ACTIVE_SPEAKING_SESSION",
+            path: `${path}.status`,
+            message: "Một lesson chỉ được có một phiên nói active.",
+          });
+        else activeLessons.add(lessonId);
+      }
+      const itemIds = Array.isArray(session.itemIds) ? session.itemIds : [];
+      if (!Array.isArray(session.itemIds) || itemIds.length === 0)
+        d.push({
+          code: "INVALID_SPEAKING_SESSION_ITEMS",
+          path: `${path}.itemIds`,
+          message: "Phiên nói phải có ít nhất một task.",
+        });
+      const itemSet = new Set<string>();
+      for (let itemIndex = 0; itemIndex < itemIds.length; itemIndex++) {
+        const itemId = itemIds[itemIndex];
+        if (
+          typeof itemId !== "string" ||
+          itemSet.has(itemId) ||
+          !speakingTasks.get(lessonId)?.has(itemId)
+        )
+          d.push({
+            code: "INVALID_SPEAKING_SESSION_ITEM",
+            path: `${path}.itemIds[${itemIndex}]`,
+            message: "Task bị trùng hoặc không thuộc lesson.",
+          });
+        if (typeof itemId === "string") itemSet.add(itemId);
+      }
+      const currentIndex = session.currentItemIndex;
+      if (
+        !nonNegativeInteger(currentIndex) ||
+        itemIds.length === 0 ||
+        Number(currentIndex) >= itemIds.length
+      )
+        d.push({
+          code: "INVALID_SPEAKING_CURRENT_INDEX",
+          path: `${path}.currentItemIndex`,
+          message: "currentItemIndex phải nằm trong task list.",
+        });
+      const currentTask =
+        nonNegativeInteger(currentIndex) && Number(currentIndex) < itemIds.length
+          ? speakingTasks.get(lessonId)?.get(String(itemIds[Number(currentIndex)]))
+          : undefined;
+      if (
+        typeof session.currentStep !== "string" ||
+        !LADDER_STEPS.includes(session.currentStep as (typeof LADDER_STEPS)[number]) ||
+        (currentTask &&
+          !currentTask.steps.includes(session.currentStep as (typeof LADDER_STEPS)[number]))
+      )
+        d.push({
+          code: "INVALID_SPEAKING_CURRENT_STEP",
+          path: `${path}.currentStep`,
+          message: "currentStep không hợp lệ cho task hiện tại.",
+        });
+      for (const [field, shape] of [
+        ["drafts", session.drafts],
+        ["checks", session.checks],
+      ] as const) {
+        if (shape !== undefined && !record(shape))
+          d.push({
+            code: "INVALID_SPEAKING_SESSION_STATE",
+            path: `${path}.${field}`,
+            message: `${field} phải là object theo item ID.`,
+          });
+        else if (record(shape))
+          for (const [itemId, itemValue] of Object.entries(shape)) {
+            if (!itemSet.has(itemId))
+              d.push({
+                code: "ORPHAN_SPEAKING_SESSION_STATE",
+                path: `${path}.${field}.${itemId}`,
+                message: `${field} tham chiếu task không thuộc session.`,
+              });
+            if (
+              (field === "drafts" &&
+                (typeof itemValue !== "string" ||
+                  itemValue.length > MAX_SPEAKING_TEXT_CHARS ||
+                  utf8Bytes(itemValue) > 2_000)) ||
+              (field === "checks" && !validSentenceCheck(itemValue))
+            )
+              d.push({
+                code: "INVALID_SPEAKING_SESSION_STATE",
+                path: `${path}.${field}.${itemId}`,
+                message: `${field} có nội dung không hợp lệ.`,
+              });
+          }
+      }
+      if (!iso(session.createdAt))
+        d.push({
+          code: "INVALID_SPEAKING_TIMESTAMP",
+          path: `${path}.createdAt`,
+          message: "createdAt không hợp lệ.",
+        });
+      if (!iso(session.updatedAt))
+        d.push({
+          code: "INVALID_SPEAKING_TIMESTAMP",
+          path: `${path}.updatedAt`,
+          message: "updatedAt không hợp lệ.",
+        });
+      const completedAtIsIso = iso(session.completedAt);
+      if (
+        status === "completed" &&
+        (!completedAtIsIso ||
+          !nonNegativeInteger(currentIndex) ||
+          Number(currentIndex) !== itemIds.length - 1 ||
+          (currentTask && session.currentStep !== currentTask.steps.at(-1)))
+      )
+        d.push({
+          code: "INCONSISTENT_COMPLETED_SPEAKING_SESSION",
+          path: completedAtIsIso ? `${path}.currentItemIndex` : `${path}.completedAt`,
+          message: "Phiên completed không nhất quán với task/step cuối.",
+        });
+      if (status !== "completed" && session.completedAt !== undefined)
+        d.push({
+          code: "INCONSISTENT_SPEAKING_SESSION_STATUS",
+          path: `${path}.completedAt`,
+          message: "Phiên active/cancelled không được có completedAt.",
+        });
+    });
+  }
+  if (
     value.listeningSessions !== undefined &&
-    (!Array.isArray(value.listeningSessions) || value.listeningSessions.length > 2000)
+    (!Array.isArray(value.listeningSessions) ||
+      !isBackupCollectionCountAllowed(value.listeningSessions.length, MAX_LISTENING_SESSION_COUNT))
   ) {
     d.push({
       code: "INVALID_LISTENING_SESSIONS",
@@ -374,7 +1027,11 @@ export function validateBackup(value: unknown): {
   }
   if (
     value.listeningItemProgress !== undefined &&
-    (!Array.isArray(value.listeningItemProgress) || value.listeningItemProgress.length > 5000)
+    (!Array.isArray(value.listeningItemProgress) ||
+      !isBackupCollectionCountAllowed(
+        value.listeningItemProgress.length,
+        MAX_LISTENING_PROGRESS_COUNT,
+      ))
   ) {
     d.push({
       code: "INVALID_LISTENING_PROGRESS",
@@ -430,7 +1087,10 @@ export function validateBackup(value: unknown): {
   const document = value as unknown as BackupDocument;
   if (
     !record(document.integrity) ||
+    !hasExactKeys(document.integrity, ["algorithm", "checksum"]) ||
     document.integrity.algorithm !== "SHA-256" ||
+    typeof document.integrity.checksum !== "string" ||
+    !SHA256.test(document.integrity.checksum) ||
     document.integrity.checksum !== checksum(bare(document))
   )
     d.push({
@@ -450,18 +1110,41 @@ export function validateBackup(value: unknown): {
   };
 }
 
-export function exportBackup(
+function createBackupDocument(
   database: DatabaseSync,
   appVersion: string,
   now = new Date().toISOString(),
+  insideWriteTransaction = false,
 ): BackupDocument {
-  database.exec("BEGIN");
+  if (!insideWriteTransaction) database.exec("BEGIN");
   try {
-    const lessons = (
-      database
-        .prepare("SELECT lesson_json FROM lessons WHERE deleted_at IS NULL ORDER BY id")
-        .all() as { lesson_json: string }[]
-    ).map((r) => JSON.parse(r.lesson_json) as Lesson);
+    const lessonRows = database
+      .prepare(
+        `SELECT lesson_json, updated_at, source_title, source_url, source_channel,
+                original_transcript, processed_transcript, was_truncated
+         FROM lessons WHERE deleted_at IS NULL ORDER BY id`,
+      )
+      .all() as Array<{
+      lesson_json: string;
+      updated_at: string;
+      source_title: string | null;
+      source_url: string | null;
+      source_channel: string | null;
+      original_transcript: string | null;
+      processed_transcript: string | null;
+      was_truncated: number;
+    }>;
+    const lessons = lessonRows.map((row) => JSON.parse(row.lesson_json) as Lesson);
+    const lessonSources = lessonRows.map((row, index): LessonSourceBackup => ({
+      lessonId: lessons[index].id,
+      title: row.source_title,
+      url: row.source_url,
+      channel: row.source_channel,
+      originalTranscript: row.original_transcript,
+      processedTranscript: row.processed_transcript,
+      wasTruncated: Boolean(row.was_truncated),
+      updatedAt: row.updated_at,
+    }));
     const progress = (
       database
         .prepare(
@@ -570,13 +1253,14 @@ export function exportBackup(
     }));
     const payload: BareBackup = {
       backupFormat: BACKUP_FORMAT,
-      backupVersion: 1,
+      backupVersion: CURRENT_BACKUP_VERSION,
       exportedAt: now,
       appVersion,
       databaseSchemaVersion: CURRENT_DATABASE_VERSION,
       lessonSchemaVersion: CURRENT_LESSON_SCHEMA_VERSION,
       progressSchemaVersion: 1,
       lessons,
+      lessonSources,
       progress,
       speakingProgress,
       speakingSessions,
@@ -593,12 +1277,34 @@ export function exportBackup(
       throw new Error(
         `Dữ liệu SQLite không hợp lệ: ${validated.diagnostics.map((x) => x.message).join("; ")}`,
       );
-    database.exec("COMMIT");
+    if (!isBackupByteLengthAllowed(serializedUtf8Bytes(document)))
+      throw new Error(`Backup vượt quá giới hạn ${MAX_BACKUP_BYTES} byte.`);
+    if (!insideWriteTransaction) database.exec("COMMIT");
     return document;
-  } catch (e) {
-    database.exec("ROLLBACK");
-    throw e;
+  } catch (error) {
+    if (!insideWriteTransaction) database.exec("ROLLBACK");
+    throw error;
   }
+}
+
+export function assertBackupCapacity(database: DatabaseSync): void {
+  try {
+    createBackupDocument(database, "capacity-check", new Date().toISOString(), true);
+  } catch (error) {
+    throw new StorageError(
+      "VALIDATION_ERROR",
+      `Thay đổi sẽ vượt giới hạn backup ${MAX_BACKUP_BYTES} byte hoặc tạo dữ liệu không thể sao lưu.`,
+      { cause: error },
+    );
+  }
+}
+
+export function exportBackup(
+  database: DatabaseSync,
+  appVersion: string,
+  now = new Date().toISOString(),
+): BackupDocument {
+  return createBackupDocument(database, appVersion, now);
 }
 
 function existing(database: DatabaseSync): Map<string, Lesson> {
@@ -617,14 +1323,36 @@ export function previewImport(database: DatabaseSync, value: unknown): ImportPre
   if (!doc)
     return {
       valid: false,
+      backupVersion:
+        record(value) && typeof value.backupVersion === "number" ? value.backupVersion : undefined,
       lessonCount: Array.isArray((value as Record<string, unknown>)?.lessons)
         ? ((value as Record<string, unknown>).lessons as unknown[]).length
         : 0,
-      progressCount: 0,
+      lessonSourceCount: Array.isArray((value as Record<string, unknown>)?.lessonSources)
+        ? ((value as Record<string, unknown>).lessonSources as unknown[]).length
+        : 0,
+      progressCount: Array.isArray((value as Record<string, unknown>)?.progress)
+        ? ((value as Record<string, unknown>).progress as unknown[]).length
+        : 0,
+      speakingProgressCount: Array.isArray((value as Record<string, unknown>)?.speakingProgress)
+        ? ((value as Record<string, unknown>).speakingProgress as unknown[]).length
+        : 0,
+      speakingSessionCount: Array.isArray((value as Record<string, unknown>)?.speakingSessions)
+        ? ((value as Record<string, unknown>).speakingSessions as unknown[]).length
+        : 0,
+      listeningSessionCount: Array.isArray((value as Record<string, unknown>)?.listeningSessions)
+        ? ((value as Record<string, unknown>).listeningSessions as unknown[]).length
+        : 0,
+      listeningItemProgressCount: Array.isArray(
+        (value as Record<string, unknown>)?.listeningItemProgress,
+      )
+        ? ((value as Record<string, unknown>).listeningItemProgress as unknown[]).length
+        : 0,
       validRecords: 0,
       invalidRecords: validated.diagnostics.length,
       duplicates: 0,
       conflicts: 0,
+      remaps: 0,
       newLessons: 0,
       updatedLessons: 0,
       previouslyImported: false,
@@ -635,17 +1363,23 @@ export function previewImport(database: DatabaseSync, value: unknown): ImportPre
   const fingerprints = new Map([...current.values()].map((l) => [contentFingerprint(l), l.id]));
   let duplicates = 0,
     conflicts = 0,
-    newLessons = 0;
+    newLessons = 0,
+    remaps = 0;
   for (const lesson of doc.lessons) {
     const same = current.get(lesson.id);
+    const duplicateId = fingerprints.get(contentFingerprint(lesson));
     if (same) {
       if (contentFingerprint(same) === contentFingerprint(lesson)) duplicates++;
       else {
         conflicts++;
-        newLessons++;
+        remaps++;
+        if (duplicateId) duplicates++;
+        else newLessons++;
       }
-    } else if (fingerprints.has(contentFingerprint(lesson))) duplicates++;
-    else newLessons++;
+    } else if (duplicateId) {
+      duplicates++;
+      if (duplicateId !== lesson.id) remaps++;
+    } else newLessons++;
   }
   const fingerprint = doc.integrity.checksum;
   const prior = Boolean(
@@ -656,17 +1390,35 @@ export function previewImport(database: DatabaseSync, value: unknown): ImportPre
   const warnings: string[] = [];
   if (conflicts) warnings.push(`${conflicts} xung đột ID sẽ được giữ cả hai bằng ID mới khi gộp.`);
   if (prior) warnings.push("Backup này đã từng được nhập; hãy xác nhận nếu muốn tiếp tục.");
+  if (doc.backupVersion === 1 && doc.lessonSources === undefined)
+    warnings.push(
+      "Backup v1 không chứa dữ liệu nguồn/transcript; các field nguồn sẽ được khôi phục mặc định là rỗng.",
+    );
   return {
     valid: true,
+    backupVersion: doc.backupVersion,
     exportedAt: doc.exportedAt,
     appVersion: doc.appVersion,
     databaseSchemaVersion: doc.databaseSchemaVersion,
     lessonCount: doc.lessons.length,
+    lessonSourceCount: doc.lessonSources?.length ?? 0,
     progressCount: doc.progress.length,
-    validRecords: doc.lessons.length + doc.progress.length,
+    speakingProgressCount: doc.speakingProgress?.length ?? 0,
+    speakingSessionCount: doc.speakingSessions?.length ?? 0,
+    listeningSessionCount: doc.listeningSessions?.length ?? 0,
+    listeningItemProgressCount: doc.listeningItemProgress?.length ?? 0,
+    validRecords:
+      doc.lessons.length +
+      (doc.lessonSources?.length ?? 0) +
+      doc.progress.length +
+      (doc.speakingProgress?.length ?? 0) +
+      (doc.speakingSessions?.length ?? 0) +
+      (doc.listeningSessions?.length ?? 0) +
+      (doc.listeningItemProgress?.length ?? 0),
     invalidRecords: 0,
     duplicates,
     conflicts,
+    remaps,
     newLessons,
     updatedLessons: duplicates,
     previouslyImported: prior,
@@ -953,19 +1705,89 @@ export function importBackup(
     const current = existing(database);
     const byFingerprint = new Map([...current.values()].map((l) => [contentFingerprint(l), l.id]));
     const remap = new Map<string, string>();
+    const sourceByLesson = new Map(
+      (doc.lessonSources ?? []).map((source) => [source.lessonId, source]),
+    );
+    const expectedSources = new Map<string, LessonSourceBackup>();
     const now = new Date().toISOString();
     for (const source of doc.lessons) {
       let id = source.id;
       const same = current.get(id);
       const fp = contentFingerprint(source);
-      if (same && contentFingerprint(same) !== fp) id = randomUUID();
-      else if (!same && byFingerprint.has(fp)) id = byFingerprint.get(fp)!;
+      if (mode === "merge" && same && contentFingerprint(same) !== fp)
+        id = byFingerprint.get(fp) ?? randomUUID();
+      else if (mode === "merge" && !same && byFingerprint.has(fp)) id = byFingerprint.get(fp)!;
       remap.set(source.id, id);
-      if (current.has(id) || database.prepare("SELECT 1 FROM lessons WHERE id=?").get(id)) continue;
+      const incomingSource = sourceByLesson.get(source.id) ?? {
+        lessonId: source.id,
+        title: null,
+        url: null,
+        channel: null,
+        originalTranscript: null,
+        processedTranscript: null,
+        wasTruncated: false,
+        updatedAt: source.updatedAt,
+      };
+      const currentRow = database
+        .prepare(
+          `SELECT updated_at,source_title,source_url,source_channel,original_transcript,
+                  processed_transcript,was_truncated FROM lessons WHERE id=?`,
+        )
+        .get(id) as
+        | {
+            updated_at: string;
+            source_title: string | null;
+            source_url: string | null;
+            source_channel: string | null;
+            original_transcript: string | null;
+            processed_transcript: string | null;
+            was_truncated: number;
+          }
+        | undefined;
+      if (currentRow) {
+        const currentSource: LessonSourceBackup = {
+          lessonId: id,
+          title: currentRow.source_title,
+          url: currentRow.source_url,
+          channel: currentRow.source_channel,
+          originalTranscript: currentRow.original_transcript,
+          processedTranscript: currentRow.processed_transcript,
+          wasTruncated: Boolean(currentRow.was_truncated),
+          updatedAt: currentRow.updated_at,
+        };
+        const winner =
+          mode === "merge" &&
+          Date.parse(currentSource.updatedAt) > Date.parse(incomingSource.updatedAt)
+            ? currentSource
+            : { ...incomingSource, lessonId: id };
+        if (winner !== currentSource)
+          database
+            .prepare(
+              `UPDATE lessons SET source_title=?,source_url=?,source_channel=?,
+                 original_transcript=?,processed_transcript=?,was_truncated=?,updated_at=?
+               WHERE id=?`,
+            )
+            .run(
+              winner.title,
+              winner.url,
+              winner.channel,
+              winner.originalTranscript,
+              winner.processedTranscript,
+              winner.wasTruncated ? 1 : 0,
+              winner.updatedAt,
+              id,
+            );
+        expectedSources.set(id, winner);
+        continue;
+      }
       const lesson = { ...source, id };
       database
         .prepare(
-          "INSERT INTO lessons(id,schema_version,title,summary,lesson_json,created_at,updated_at,was_truncated) VALUES(?,?,?,?,?,?,?,0)",
+          `INSERT INTO lessons(
+             id,schema_version,title,summary,lesson_json,created_at,updated_at,
+             source_title,source_url,source_channel,original_transcript,
+             processed_transcript,was_truncated
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           id,
@@ -974,8 +1796,17 @@ export function importBackup(
           lesson.summary,
           JSON.stringify(lesson),
           lesson.createdAt,
-          lesson.updatedAt,
+          incomingSource.updatedAt,
+          incomingSource.title,
+          incomingSource.url,
+          incomingSource.channel,
+          incomingSource.originalTranscript,
+          incomingSource.processedTranscript,
+          incomingSource.wasTruncated ? 1 : 0,
         );
+      current.set(id, lesson);
+      byFingerprint.set(fp, id);
+      expectedSources.set(id, { ...incomingSource, lessonId: id });
     }
     for (const source of doc.progress) {
       const id = remap.get(source.lessonId)!;
@@ -1051,16 +1882,31 @@ export function importBackup(
           )?.id
         );
       });
-      if (mapped.some((x) => !x)) continue;
+      if (mapped.some((x) => !x))
+        throw new Error(`Không thể remap speaking item cho session ${source.id}.`);
+      const mappedIds = mapped as string[];
+      let sessionId = source.id;
+      const idCollision = database
+        .prepare("SELECT lesson_id FROM speaking_sessions WHERE id=?")
+        .get(sessionId) as { lesson_id: string } | undefined;
+      if (idCollision && idCollision.lesson_id !== id) sessionId = randomUUID();
       const local = database
-        .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active'")
-        .get(id) as Record<string, unknown> | undefined;
+        .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active' AND id<>?")
+        .get(id, sessionId) as Record<string, unknown> | undefined;
+      const incomingStepRank = LADDER_STEPS.indexOf(
+        source.currentStep as (typeof LADDER_STEPS)[number],
+      );
+      const localStepRank = local
+        ? LADDER_STEPS.indexOf(String(local.current_step) as (typeof LADDER_STEPS)[number])
+        : -1;
       if (
         source.status === "active" &&
         local &&
         (Number(local.current_item_index) > source.currentItemIndex ||
           (Number(local.current_item_index) === source.currentItemIndex &&
-            Date.parse(String(local.updated_at)) >= Date.parse(source.updatedAt)))
+            (localStepRank > incomingStepRank ||
+              (localStepRank === incomingStepRank &&
+                Date.parse(String(local.updated_at)) >= Date.parse(source.updatedAt)))))
       )
         continue;
       if (source.status === "active" && local)
@@ -1077,15 +1923,24 @@ export function importBackup(
         );
       database
         .prepare(
-          "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,drafts_json,checks_json,current_item_index,current_step,status,created_at,updated_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          `INSERT INTO speaking_sessions(
+             id,lesson_id,item_ids_json,drafts_json,checks_json,current_item_index,
+             current_step,status,created_at,updated_at,completed_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             lesson_id=excluded.lesson_id,item_ids_json=excluded.item_ids_json,
+             drafts_json=excluded.drafts_json,checks_json=excluded.checks_json,
+             current_item_index=excluded.current_item_index,current_step=excluded.current_step,
+             status=excluded.status,created_at=excluded.created_at,
+             updated_at=excluded.updated_at,completed_at=excluded.completed_at`,
         )
         .run(
-          randomUUID(),
+          sessionId,
           id,
-          JSON.stringify(mapped),
+          JSON.stringify(mappedIds),
           JSON.stringify(remapObject(source.drafts)),
           JSON.stringify(remapObject(source.checks)),
-          Math.min(source.currentItemIndex, mapped.length - 1),
+          source.currentItemIndex,
           source.currentStep,
           source.status,
           source.createdAt,
@@ -1248,7 +2103,26 @@ export function importBackup(
       const l = database.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as
         { lesson_json: string } | undefined;
       if (!l || !validateCanonicalLesson(JSON.parse(l.lesson_json)).success)
-        throw new Error(`Verify lesson tháº¥t báº¡i: ${oldId}`);
+        throw new Error(`Verify lesson thất bại: ${oldId}`);
+    }
+    for (const [id, expected] of expectedSources) {
+      const row = database
+        .prepare(
+          `SELECT updated_at,source_title,source_url,source_channel,original_transcript,
+                  processed_transcript,was_truncated FROM lessons WHERE id=?`,
+        )
+        .get(id) as Record<string, unknown> | undefined;
+      if (
+        !row ||
+        row.source_title !== expected.title ||
+        row.source_url !== expected.url ||
+        row.source_channel !== expected.channel ||
+        row.original_transcript !== expected.originalTranscript ||
+        row.processed_transcript !== expected.processedTranscript ||
+        Boolean(row.was_truncated) !== expected.wasTruncated ||
+        row.updated_at !== expected.updatedAt
+      )
+        throw new Error(`Verify lesson source thất bại: ${id}`);
     }
     for (const source of doc.progress) {
       const id = remap.get(source.lessonId)!;
@@ -1257,18 +2131,75 @@ export function importBackup(
         .get(id) as { progress_json: string } | undefined;
       const checked = row ? normalizeLessonProgress(JSON.parse(row.progress_json), id) : undefined;
       if (!checked?.success || checked.data?.lessonId !== id)
-        throw new Error(`Verify progress tháº¥t báº¡i: ${source.lessonId}`);
+        throw new Error(`Verify progress thất bại: ${source.lessonId}`);
     }
     for (const id of new Set(remap.values())) {
       const targetRow = database.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as
         { lesson_json: string } | undefined;
       if (!targetRow) throw new Error(`Verify listening lesson thất bại: ${id}`);
-      const validItems = new Map(
-        extractListeningItems(JSON.parse(targetRow.lesson_json) as Lesson).map((item) => [
-          item.id,
-          item,
-        ]),
+      const lesson = JSON.parse(targetRow.lesson_json) as Lesson;
+      const validSpeakingItems = new Map(
+        extractPracticeCandidates(lesson).map((item) => [item.id, item]),
       );
+      const validSpeakingTasks = new Map(
+        buildSpeakingSession(lesson).map((item) => [item.id, item]),
+      );
+      const speakingRows = database
+        .prepare("SELECT * FROM speaking_progress WHERE lesson_id=?")
+        .all(id) as Record<string, unknown>[];
+      for (const row of speakingRows) {
+        const item = validSpeakingItems.get(String(row.practice_item_id));
+        if (
+          !item ||
+          item.sourceType !== row.source_type ||
+          item.sourceItemId !== row.source_item_id ||
+          !SPEAKING_STATUSES.includes(row.status as (typeof SPEAKING_STATUSES)[number]) ||
+          [
+            row.attempt_count,
+            row.help_count,
+            row.show_answer_count,
+            row.recalled_count,
+            row.personalized_count,
+          ].some((count) => !nonNegativeInteger(Number(count)))
+        )
+          throw new Error(`Verify speaking progress thất bại: ${id}`);
+      }
+      const speakingSessionRows = database
+        .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=?")
+        .all(id) as Record<string, unknown>[];
+      for (const row of speakingSessionRows) {
+        const itemIds = JSON.parse(String(row.item_ids_json)) as unknown;
+        const drafts = JSON.parse(String(row.drafts_json)) as unknown;
+        const checks = JSON.parse(String(row.checks_json)) as unknown;
+        const currentIndex = Number(row.current_item_index);
+        const currentTask =
+          Array.isArray(itemIds) && nonNegativeInteger(currentIndex)
+            ? validSpeakingTasks.get(String(itemIds[currentIndex]))
+            : undefined;
+        if (
+          !Array.isArray(itemIds) ||
+          itemIds.length === 0 ||
+          itemIds.some((itemId) => typeof itemId !== "string" || !validSpeakingTasks.has(itemId)) ||
+          !currentTask ||
+          !currentTask.steps.includes(row.current_step as (typeof LADDER_STEPS)[number]) ||
+          !SESSION_STATUSES.includes(row.status as (typeof SESSION_STATUSES)[number]) ||
+          !record(drafts) ||
+          !record(checks) ||
+          Object.keys(drafts).some((itemId) => !itemIds.includes(itemId)) ||
+          Object.entries(checks).some(
+            ([itemId, check]) => !itemIds.includes(itemId) || !validSentenceCheck(check),
+          )
+        )
+          throw new Error(`Verify speaking session thất bại: ${id}`);
+      }
+      const activeSpeakingCount = database
+        .prepare(
+          "SELECT COUNT(*) count FROM speaking_sessions WHERE lesson_id=? AND status='active'",
+        )
+        .get(id) as { count: number };
+      if (Number(activeSpeakingCount.count) > 1)
+        throw new Error(`Verify active speaking session thất bại: ${id}`);
+      const validItems = new Map(extractListeningItems(lesson).map((item) => [item.id, item]));
       const rows = database
         .prepare("SELECT * FROM listening_item_progress WHERE lesson_id=?")
         .all(id) as Record<string, unknown>[];
@@ -1290,9 +2221,41 @@ export function importBackup(
         .get(id) as { count: number };
       if (Number(activeCount.count) > 1)
         throw new Error(`Verify active listening session thất bại: ${id}`);
+      const listeningSessionRows = database
+        .prepare("SELECT * FROM listening_sessions WHERE lesson_id=?")
+        .all(id) as Record<string, unknown>[];
+      for (const row of listeningSessionRows) {
+        const revealed = JSON.parse(String(row.revealed_item_ids_json)) as unknown;
+        if (
+          !SESSION_STATUSES.includes(row.status as (typeof SESSION_STATUSES)[number]) ||
+          !LISTENING_STEPS.includes(row.current_step as ListeningStep) ||
+          !Array.isArray(revealed) ||
+          revealed.some((itemId) => typeof itemId !== "string" || !validItems.has(itemId)) ||
+          (row.status === "completed" &&
+            (row.current_step !== "complete" || !iso(row.completed_at)))
+        )
+          throw new Error(`Verify listening session thất bại: ${id}`);
+      }
+    }
+    if (mode === "replace") {
+      const count = (table: string) =>
+        Number(
+          (database.prepare(`SELECT COUNT(*) count FROM ${table}`).get() as { count: number })
+            .count,
+        );
+      if (
+        count("lessons") !== doc.lessons.length ||
+        count("lesson_progress") !== doc.progress.length ||
+        count("speaking_progress") !== (doc.speakingProgress?.length ?? 0) ||
+        count("speaking_sessions") !== (doc.speakingSessions?.length ?? 0) ||
+        count("listening_sessions") !== (doc.listeningSessions?.length ?? 0) ||
+        count("listening_item_progress") !== (doc.listeningItemProgress?.length ?? 0)
+      )
+        throw new Error("Verify số lượng record sau Replace thất bại.");
     }
     const foreignKeyError = database.prepare("PRAGMA foreign_key_check").get();
     if (foreignKeyError) throw new Error("Verify foreign key sau import thất bại.");
+    assertBackupCapacity(database);
     const importId = randomUUID();
     database
       .prepare("INSERT INTO import_receipts VALUES(?,?,?,?,?,?,?,?)")
