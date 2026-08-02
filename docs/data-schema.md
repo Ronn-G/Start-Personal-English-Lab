@@ -1,6 +1,6 @@
 # Data schemas
 
-Four independent integer versions exist: SQLite database **11** (`PRAGMA user_version`), backup
+Four independent integer versions exist: SQLite database **12** (`PRAGMA user_version`), backup
 format **2** (`CURRENT_BACKUP_VERSION`), Lesson document **1**
 (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1**
 (`CURRENT_PROGRESS_SCHEMA_VERSION`). Backup v1 remains readable for recovery compatibility.
@@ -44,6 +44,18 @@ Schema v6 adds `speaking_progress`, keyed by `(lesson_id, practice_item_id)`. It
 # Personal sentence state
 
 Schema v6 uses `speaking_sessions.drafts_json` for optional user-written drafts and `checks_json` for validated sentence-check results plus input hash/time. Both are session/item scoped and never modify lesson JSON.
+
+# Speaking correctness and concurrency (schema v12)
+
+Schema v12 adds `revision`, `revealed_item_ids_json`, `draft_versions_json`, and
+`check_versions_json` to `speaking_sessions`, with non-negative/JSON CHECK constraints and a
+conditional-mutation index. Existing rows migrate with revision `0`, empty reveal markers, and empty
+version maps. Lesson and Progress document versions do not change.
+
+Session revision protects ladder, reveal, draft, rating, and completion mutations. Draft/check
+versions additionally order asynchronous item-scoped writes. Mutations validate active status,
+stable current item identity, expected index/step, lesson/source identity, and concurrency tokens
+inside a transaction. Completed/cancelled rows cannot be mutated.
 
 # Sprint 8 learning activity in Progress v1
 

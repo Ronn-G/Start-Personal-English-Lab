@@ -210,7 +210,7 @@ try {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   }
   if (!health) throw new Error(`Standalone server failed. ${stderr}`.trim());
-  if (health.schemaVersion !== 11) throw new Error("Listening schema is not v11.");
+  if (health.schemaVersion !== 12) throw new Error("Listening schema is not v12.");
 
   for (const currentLesson of [lesson, otherLesson]) {
     const response = await fetch(`${baseUrl}/api/storage/lessons`, {

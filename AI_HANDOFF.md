@@ -1,6 +1,13 @@
 # Personal English Lab — AI handoff
 
-Backup Integrity v2 raises SQLite to schema 11 and backup format 2. Backup now round-trips the exact
+Speaking Correctness and Concurrency raises SQLite to schema 12 while keeping backup format 2.
+Speaking mutations now use stable item bindings plus session revisions, enforce server-owned ladder
+transitions, make reveal/completion counters idempotent, and reject writes to finished sessions.
+Draft and sentence-check writes are versioned so delayed responses cannot attach to another item.
+Targeted, review, and daily subsets all retain exactly one final Free Speak step. The new session
+metadata is optional when importing older backup v2 files and merge never lowers status or revision.
+
+Backup Integrity v2 raised SQLite to schema 11 and backup format 2. Backup now round-trips the exact
 lesson source/transcript columns, validates Speaking payloads independently from checksum, remaps
 all source identities transactionally, and verifies restored data before commit. Schema v11 adds
 safe CHECK constraints for Speaking counters, index, status/source, and the existing five steps;
@@ -28,7 +35,7 @@ và Node.js 24. Source of truth là repository này; không sửa artifact porta
 - `tools`: local smoke tests và tooling.
 - `test`: Node test suite.
 
-SQLite là nguồn dữ liệu chính. Database schema 11, lesson schema 1, progress schema 1 và backup
+SQLite là nguồn dữ liệu chính. Database schema 12, lesson schema 1, progress schema 1 và backup
 version 2. `localStorage` chỉ dùng cho migration legacy và theme. Không đổi schema, backup format,
 API contract hay persisted data nếu sprint không yêu cầu migration rõ ràng.
 

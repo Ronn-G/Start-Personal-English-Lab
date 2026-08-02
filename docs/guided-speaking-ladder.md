@@ -1,34 +1,92 @@
-# Guided Speaking Ladder (Sprint 6)
+# Guided Speaking Ladder
 
-Guided Speaking Ladder moves learners from reading a saved sentence to recalling it, speaking from keywords, personalizing it, and adding an unscripted sentence. It uses local deterministic rules only; it does not call AI, require a microphone, record speech, or assign a pronunciation or grammar score.
+Guided Speaking Ladder moves learners from reading a saved sentence to recalling it, speaking from
+keywords, personalizing it, and adding an unscripted sentence. It does not use a microphone, record
+speech, recognize speech, or assign pronunciation or speech-quality scores.
 
-Candidates are selected from shadowing lines, useful example sentences, sentence-mining sentences, then vocabulary contexts. Shadowing markup is normalized for display and audio. Duplicate, fragmentary, and overly long sentences are excluded. Identity is derived from normalization version, lesson ID, source type, and the stable source item ID.
+Candidates come from shadowing lines, example sentences, sentence-mining sentences, then vocabulary
+contexts. Stable identity combines the normalization version, lesson ID, source type, and source item
+ID. Duplicate, fragmentary, and overly long candidates are excluded.
 
-The five steps are Read, Recall, Keywords, Personalize, and Free Speak. Recall masks a target phrase when available. Keywords retain only a small set of content cues. Personalize uses a conservative local pattern or a change-one-part fallback. At least one item in a non-empty session includes Free Speak.
+## State machine and subsets
 
-Speaking storage was finalized in SQLite schema v7; the current database schema is v11. Per-item
-status, monotonic counters, explicit self-rating and timestamps remain in `speaking_progress`.
-`speaking_sessions` stores lesson/item references and the current item/step. Version 7 safely repairs
-databases created by an intermediate Sprint 6 build that omitted draft/check or source-item columns.
-A partial unique index permits one active session per lesson, so repeated Start requests coalesce and
-a partial session resumes.
+`SpeakingService` owns all queries and mutations. Routes only parse JSON, validate the command shape,
+invoke the service, and map domain errors to HTTP.
 
-Audio continues to use `SpeakButton` and the Sprint 5 cache. Playback requires a click; the sentence is passed without ladder state, so cache identity remains text/voice/speed/language based. Audio failure does not prevent advancing.
+The full ladder is:
 
-Current limitations: no speech recognition, recording, AI feedback, pronunciation scoring, cloud sync, or full spaced-repetition scheduler.
+```text
+Read -> Recall -> Keywords -> Personalize -> Free Speak
+```
 
-Lesson entry labels come from persisted state: Start, Continue with item progress, or Practice Again. The dashboard's Practice Speaking action selects an active session first, then difficult progress, then a recent eligible lesson. Completion summarizes help, personalization, Free Speak, ratings, and review phrases; difficult review creates a focused session.
+The server computes the only next step. A client-supplied target cannot skip or backtrack. Non-final
+tasks stop at Personalize. Every non-empty full, targeted, review, or daily subset assigns Free Speak
+to exactly its final task; it is not added to every task.
 
-Run `npm.cmd run smoke:speaking` for focused speaking domain and backup round-trip coverage. Full verification also uses `npm.cmd test`, lint, build, storage, backup, and audio smoke scripts.
+## Transactions, concurrency, and immutability
 
-## Browser acceptance checklist
+SQLite schema v12 stores a non-negative session `revision`. Every item mutation binds to lesson ID,
+session ID, stable practice item ID, current item index, current step, and expected revision. Inside a
+`BEGIN IMMEDIATE` transaction the service reloads the active row, validates the binding and source,
+performs a conditional update, and requires exactly one changed row before updating progress and
+checking backup capacity. Any failure rolls back the whole command.
 
-Run `npm.cmd run dev`, open `http://localhost:3000` in Chrome or Edge, and use DevTools Console to check for serious errors. Verify: Start from a lesson; audio plays only after click; Read, Recall, Show Answer, Keywords, and Personalize are clear; Personalize shows an original, a blank pattern or fallback, topic prompts, and rating guidance; Free Speak supplies no complete answer; exiting then refreshing continues at the same item and step; completion summary is correct; Review Difficult Items and Practice Again work; dashboard Practice Speaking chooses a lesson; a lesson without candidates shows the empty state; no audio autoplays.
+Successful ladder/session mutations increment revision once. A stale request returns `409 CONFLICT`,
+does not change counters, and makes the UI reload the latest state. This revision-based design is the
+idempotency mechanism for advance, reveal, draft, and completion commands.
 
-Manual acceptance status: **Pending user verification on Chrome/Edge**.
+Completed and cancelled sessions are immutable. Start New, Practice Again, targeted practice, and
+Review cancel the old active session and insert the replacement in one transaction. If insertion or
+backup validation fails, the old session remains active.
 
-## Personal sentence drafts and checking
+## Counters and ratings
 
-Writing a personal sentence is optional; the main goal remains saying it aloud. Drafts are stored server-side with the current session/item (maximum 500 characters), survive refresh/exit, and never overwrite lesson content or trigger audio/AI automatically. **Check my sentence** is optional and calls the existing Gemini provider only after a click. It sends only the current original, local question/pattern, target phrase, and draft—not the transcript, full lesson, progress, backup, audio, or secrets.
+`revealed_item_ids_json` records Show Answer use by item within a session. The first reveal increments
+`help_count` and `show_answer_count`; later clicks/retries do not. Completing/rating an item is allowed
+only at that task's final step, increments `attempt_count` once, and derives help from the persisted
+reveal marker rather than a client boolean. Hard/Okay/Easy records how easily the learner spoke the
+item, not grammar quality.
 
-The response separates a minimal corrected sentence from an optional natural spoken alternative and gives a short Vietnamese explanation. Editing the draft marks old feedback stale. Drafts and validated feedback are included in backup session data; prompts, raw provider responses, API keys, and token metadata are not. Provider failure never removes the draft or blocks speaking/self-rating. Hard/Okay/Easy rates speaking ease, not grammar quality.
+Review and daily selection exclude soft-deleted lessons and use the latest stored status/rating.
+Cumulative historical help is not a permanent difficulty flag. A fuller mastery/due model is future
+work; this sprint does not add spaced repetition.
+
+## Draft autosave
+
+Drafts are optional and limited to 500 characters. Each request carries the stable item binding and a
+monotonic client draft version. The server writes only at Personalize, rejects older versions, and
+cannot infer item B for a late item-A request. The UI debounces background saves, cancels on unmount,
+flushes before advance/completion, and shows Saving/Saved/Not saved without disabling audio.
+
+## Sentence checking
+
+Sentence checking is optional text feedback. The provider call runs outside a database transaction.
+Before the call, the service validates session, item, Personalize step, input, hash, revision, and
+check version. After the provider returns, a new transaction reloads and revalidates current state,
+merges into the latest checks JSON, and accepts only a newer per-item check version. Out-of-order or
+otherwise stale responses return 409 and are not written. Provider failure never mutates checks or
+removes a draft.
+
+Only the original sentence, local prompt/pattern, target phrase, and user draft go to the provider.
+Transcripts, full lessons, progress, backups, audio, secrets, prompts, raw provider responses, and
+token metadata are not persisted as sentence-check state.
+
+## Backup compatibility
+
+Backup v2 exports revisions, reveal markers, draft/check versions, drafts, and validated checks so an
+active session resumes faithfully. Those concurrency fields remain optional when importing older v2
+files and default safely. Merge never lowers session revision/status or progress counters. Backup v1
+and earlier v2 files remain readable.
+
+## UI and acceptance
+
+Mutation controls use a command-level busy guard, `aria-busy`, checked `response.ok`, and
+`try/catch/finally`. Conflicts reload state and show a neutral message. Audio remains available when a
+background draft save does not conflict.
+
+Run `npm.cmd run smoke:speaking` for API/runtime coverage. Browser acceptance should verify the full
+ladder, rapid double-clicks, autosave across reload/item changes, stale sentence responses, immutable
+completed sessions, targeted practice, and a clean console.
+
+Current limitations: no recording, speech recognition, pronunciation scoring, cloud sync, or full
+spaced-repetition scheduler.

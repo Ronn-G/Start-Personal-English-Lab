@@ -2161,7 +2161,13 @@ test("speaking schema v11 preserves valid legacy rows and enforces integrity che
       "INSERT INTO speaking_sessions(id,lesson_id,item_ids_json,current_item_index,current_step,status,created_at,updated_at) VALUES(?,?,?,0,'keywords','active',?,?)",
     )
     .run(uuid(70), item.id, JSON.stringify([task.id]), item.createdAt, item.updatedAt);
-  assert.equal(runMigrations(database), 11);
+  assert.equal(
+    runMigrations(
+      database,
+      MIGRATIONS.filter((migration) => migration.version <= 11),
+    ),
+    11,
+  );
   assert.equal(
     (
       database.prepare("SELECT attempt_count FROM speaking_progress").get() as {
@@ -2340,7 +2346,7 @@ test("personalize uses specific replaceable blanks before general rules", () => 
 test("speaking UI names sentence and step progress and uses spoken-action labels", () => {
   const source = readFileSync(join(process.cwd(), "src/components/SpeakingPractice.tsx"), "utf8");
   for (const text of [
-    "Sentence {index+1} of {data.tasks.length}",
+    "Sentence {index + 1} of {data.tasks.length}",
     "Step {stepNumber} of {activeSteps.length}",
     "Read the sentence aloud.",
     "I read it aloud",

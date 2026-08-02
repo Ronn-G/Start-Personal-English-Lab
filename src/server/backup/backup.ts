@@ -109,6 +109,10 @@ export interface SpeakingSessionBackup {
   itemIds: string[];
   drafts?: Record<string, string>;
   checks?: Record<string, unknown>;
+  draftVersions?: Record<string, number>;
+  checkVersions?: Record<string, number>;
+  revealedItemIds?: string[];
+  revision?: number;
   currentItemIndex: number;
   currentStep: string;
   status: "active" | "completed" | "cancelled";
@@ -247,6 +251,10 @@ const SPEAKING_SESSION_KEYS = [
   "itemIds",
   "drafts",
   "checks",
+  "draftVersions",
+  "checkVersions",
+  "revealedItemIds",
+  "revision",
   "currentItemIndex",
   "currentStep",
   "status",
@@ -793,7 +801,16 @@ export function validateBackup(value: unknown): {
         return;
       }
       const required = SPEAKING_SESSION_KEYS.filter(
-        (key) => !["drafts", "checks", "completedAt"].includes(key),
+        (key) =>
+          ![
+            "drafts",
+            "checks",
+            "draftVersions",
+            "checkVersions",
+            "revealedItemIds",
+            "revision",
+            "completedAt",
+          ].includes(key),
       );
       if (!hasOnlyKeys(session, SPEAKING_SESSION_KEYS) || required.some((key) => !(key in session)))
         d.push({
@@ -860,6 +877,60 @@ export function validateBackup(value: unknown): {
           });
         if (typeof itemId === "string") itemSet.add(itemId);
       }
+      const revealedItemIds = Array.isArray(session.revealedItemIds) ? session.revealedItemIds : [];
+      if (session.revision !== undefined && !nonNegativeInteger(session.revision))
+        d.push({
+          code: "INVALID_SPEAKING_REVISION",
+          path: `${path}.revision`,
+          message: "Speaking revision phải là số nguyên không âm.",
+        });
+      if (
+        session.revealedItemIds !== undefined &&
+        (!Array.isArray(session.revealedItemIds) ||
+          revealedItemIds.some(
+            (itemId, revealedIndex) =>
+              typeof itemId !== "string" ||
+              !itemSet.has(itemId) ||
+              revealedItemIds.indexOf(itemId) !== revealedIndex,
+          ))
+      )
+        d.push({
+          code: "INVALID_SPEAKING_REVEALS",
+          path: `${path}.revealedItemIds`,
+          message: "Danh sách Show Answer của session không hợp lệ.",
+        });
+      if (session.draftVersions !== undefined) {
+        if (!record(session.draftVersions))
+          d.push({
+            code: "INVALID_SPEAKING_DRAFT_VERSIONS",
+            path: `${path}.draftVersions`,
+            message: "Draft versions phải là object theo item ID.",
+          });
+        else
+          for (const [itemId, version] of Object.entries(session.draftVersions))
+            if (!itemSet.has(itemId) || !nonNegativeInteger(version))
+              d.push({
+                code: "INVALID_SPEAKING_DRAFT_VERSION",
+                path: `${path}.draftVersions.${itemId}`,
+                message: "Draft version không hợp lệ cho session item.",
+              });
+      }
+      if (session.checkVersions !== undefined) {
+        if (!record(session.checkVersions))
+          d.push({
+            code: "INVALID_SPEAKING_CHECK_VERSIONS",
+            path: `${path}.checkVersions`,
+            message: "Check versions phải là object theo item ID.",
+          });
+        else
+          for (const [itemId, version] of Object.entries(session.checkVersions))
+            if (!itemSet.has(itemId) || !nonNegativeInteger(version))
+              d.push({
+                code: "INVALID_SPEAKING_CHECK_VERSION",
+                path: `${path}.checkVersions.${itemId}`,
+                message: "Check version không hợp lệ cho session item.",
+              });
+      }
       const currentIndex = session.currentItemIndex;
       if (
         !nonNegativeInteger(currentIndex) ||
@@ -879,7 +950,9 @@ export function validateBackup(value: unknown): {
         typeof session.currentStep !== "string" ||
         !LADDER_STEPS.includes(session.currentStep as (typeof LADDER_STEPS)[number]) ||
         (currentTask &&
-          !currentTask.steps.includes(session.currentStep as (typeof LADDER_STEPS)[number]))
+          !(
+            Number(currentIndex) === itemIds.length - 1 ? LADDER_STEPS : currentTask.steps
+          ).includes(session.currentStep as (typeof LADDER_STEPS)[number]))
       )
         d.push({
           code: "INVALID_SPEAKING_CURRENT_STEP",
@@ -936,7 +1009,7 @@ export function validateBackup(value: unknown): {
         (!completedAtIsIso ||
           !nonNegativeInteger(currentIndex) ||
           Number(currentIndex) !== itemIds.length - 1 ||
-          (currentTask && session.currentStep !== currentTask.steps.at(-1)))
+          (currentTask && session.currentStep !== "free_speak"))
       )
         d.push({
           code: "INCONSISTENT_COMPLETED_SPEAKING_SESSION",
@@ -1188,6 +1261,10 @@ function createBackupDocument(
       itemIds: JSON.parse(String(r.item_ids_json)) as string[],
       drafts: JSON.parse(String(r.drafts_json || "{}")) as Record<string, string>,
       checks: JSON.parse(String(r.checks_json || "{}")) as Record<string, unknown>,
+      draftVersions: JSON.parse(String(r.draft_versions_json || "{}")) as Record<string, number>,
+      checkVersions: JSON.parse(String(r.check_versions_json || "{}")) as Record<string, number>,
+      revealedItemIds: JSON.parse(String(r.revealed_item_ids_json || "[]")) as string[],
+      revision: Number(r.revision ?? 0),
       currentItemIndex: Number(r.current_item_index),
       currentStep: String(r.current_step),
       status: r.status as SpeakingSessionBackup["status"],
@@ -1890,6 +1967,22 @@ export function importBackup(
         .prepare("SELECT lesson_id FROM speaking_sessions WHERE id=?")
         .get(sessionId) as { lesson_id: string } | undefined;
       if (idCollision && idCollision.lesson_id !== id) sessionId = randomUUID();
+      const sameSession =
+        idCollision?.lesson_id === id
+          ? (database.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(sessionId) as
+              Record<string, unknown> | undefined)
+          : undefined;
+      const sessionStatusRank = { active: 0, cancelled: 1, completed: 2 } as const;
+      if (
+        mode === "merge" &&
+        sameSession &&
+        (sessionStatusRank[sameSession.status as keyof typeof sessionStatusRank] >
+          sessionStatusRank[source.status] ||
+          Number(sameSession.revision ?? 0) > (source.revision ?? 0) ||
+          (Number(sameSession.revision ?? 0) === (source.revision ?? 0) &&
+            Date.parse(String(sameSession.updated_at)) >= Date.parse(source.updatedAt)))
+      )
+        continue;
       const local = database
         .prepare("SELECT * FROM speaking_sessions WHERE lesson_id=? AND status='active' AND id<>?")
         .get(id, sessionId) as Record<string, unknown> | undefined;
@@ -1924,24 +2017,36 @@ export function importBackup(
       database
         .prepare(
           `INSERT INTO speaking_sessions(
-             id,lesson_id,item_ids_json,drafts_json,checks_json,current_item_index,
-             current_step,status,created_at,updated_at,completed_at
-           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+             id,lesson_id,item_ids_json,drafts_json,draft_versions_json,checks_json,check_versions_json,
+             revealed_item_ids_json,current_item_index,current_step,revision,status,
+             created_at,updated_at,completed_at
+           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
-             lesson_id=excluded.lesson_id,item_ids_json=excluded.item_ids_json,
-             drafts_json=excluded.drafts_json,checks_json=excluded.checks_json,
-             current_item_index=excluded.current_item_index,current_step=excluded.current_step,
-             status=excluded.status,created_at=excluded.created_at,
-             updated_at=excluded.updated_at,completed_at=excluded.completed_at`,
+              lesson_id=excluded.lesson_id,item_ids_json=excluded.item_ids_json,
+              drafts_json=excluded.drafts_json,draft_versions_json=excluded.draft_versions_json,
+              checks_json=excluded.checks_json,check_versions_json=excluded.check_versions_json,
+              revealed_item_ids_json=excluded.revealed_item_ids_json,
+              current_item_index=excluded.current_item_index,current_step=excluded.current_step,
+              revision=excluded.revision,status=excluded.status,created_at=excluded.created_at,
+              updated_at=excluded.updated_at,completed_at=excluded.completed_at`,
         )
         .run(
           sessionId,
           id,
           JSON.stringify(mappedIds),
           JSON.stringify(remapObject(source.drafts)),
+          JSON.stringify(remapObject(source.draftVersions)),
           JSON.stringify(remapObject(source.checks)),
+          JSON.stringify(remapObject(source.checkVersions)),
+          JSON.stringify(
+            (source.revealedItemIds ?? []).flatMap((oldId) => {
+              const at = source.itemIds.indexOf(oldId);
+              return at >= 0 && mapped[at] ? [mapped[at]] : [];
+            }),
+          ),
           source.currentItemIndex,
           source.currentStep,
+          source.revision ?? 0,
           source.status,
           source.createdAt,
           source.updatedAt,
@@ -2170,7 +2275,10 @@ export function importBackup(
       for (const row of speakingSessionRows) {
         const itemIds = JSON.parse(String(row.item_ids_json)) as unknown;
         const drafts = JSON.parse(String(row.drafts_json)) as unknown;
+        const draftVersions = JSON.parse(String(row.draft_versions_json || "{}")) as unknown;
+        const checkVersions = JSON.parse(String(row.check_versions_json || "{}")) as unknown;
         const checks = JSON.parse(String(row.checks_json)) as unknown;
+        const revealedItemIds = JSON.parse(String(row.revealed_item_ids_json || "[]")) as unknown;
         const currentIndex = Number(row.current_item_index);
         const currentTask =
           Array.isArray(itemIds) && nonNegativeInteger(currentIndex)
@@ -2181,11 +2289,29 @@ export function importBackup(
           itemIds.length === 0 ||
           itemIds.some((itemId) => typeof itemId !== "string" || !validSpeakingTasks.has(itemId)) ||
           !currentTask ||
-          !currentTask.steps.includes(row.current_step as (typeof LADDER_STEPS)[number]) ||
+          !(currentIndex === itemIds.length - 1 ? LADDER_STEPS : currentTask.steps).includes(
+            row.current_step as (typeof LADDER_STEPS)[number],
+          ) ||
           !SESSION_STATUSES.includes(row.status as (typeof SESSION_STATUSES)[number]) ||
+          !nonNegativeInteger(Number(row.revision ?? 0)) ||
           !record(drafts) ||
+          !record(draftVersions) ||
+          !record(checkVersions) ||
           !record(checks) ||
+          !Array.isArray(revealedItemIds) ||
           Object.keys(drafts).some((itemId) => !itemIds.includes(itemId)) ||
+          Object.entries(draftVersions).some(
+            ([itemId, version]) => !itemIds.includes(itemId) || !nonNegativeInteger(version),
+          ) ||
+          Object.entries(checkVersions).some(
+            ([itemId, version]) => !itemIds.includes(itemId) || !nonNegativeInteger(version),
+          ) ||
+          revealedItemIds.some(
+            (itemId, revealIndex) =>
+              typeof itemId !== "string" ||
+              !itemIds.includes(itemId) ||
+              revealedItemIds.indexOf(itemId) !== revealIndex,
+          ) ||
           Object.entries(checks).some(
             ([itemId, check]) => !itemIds.includes(itemId) || !validSentenceCheck(check),
           )

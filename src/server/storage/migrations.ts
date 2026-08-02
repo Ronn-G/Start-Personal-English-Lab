@@ -10,7 +10,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 11;
+export const CURRENT_DATABASE_VERSION = 12;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -399,6 +399,28 @@ export const MIGRATIONS: readonly Migration[] = [
           ON speaking_sessions(lesson_id) WHERE status='active';
         CREATE INDEX speaking_session_active_idx
           ON speaking_sessions(lesson_id,status,updated_at);
+      `);
+    },
+  },
+  {
+    version: 12,
+    name: "speaking_session_concurrency",
+    up(database) {
+      database.exec(`
+        ALTER TABLE speaking_sessions
+          ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0);
+        ALTER TABLE speaking_sessions
+          ADD COLUMN revealed_item_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK(json_valid(revealed_item_ids_json) AND json_type(revealed_item_ids_json) = 'array');
+        ALTER TABLE speaking_sessions
+          ADD COLUMN draft_versions_json TEXT NOT NULL DEFAULT '{}'
+          CHECK(json_valid(draft_versions_json) AND json_type(draft_versions_json) = 'object');
+        ALTER TABLE speaking_sessions
+          ADD COLUMN check_versions_json TEXT NOT NULL DEFAULT '{}'
+          CHECK(json_valid(check_versions_json) AND json_type(check_versions_json) = 'object');
+
+        CREATE INDEX speaking_session_revision_idx
+          ON speaking_sessions(id,lesson_id,status,current_item_index,current_step,revision);
       `);
     },
   },

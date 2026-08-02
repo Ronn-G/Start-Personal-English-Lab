@@ -1,5 +1,10 @@
 # SQLite Storage Architecture
 
+> Schema v12 adds optimistic-concurrency and idempotency metadata to Speaking sessions: a monotonic
+> revision, persisted reveal markers, and per-item draft/check versions. These fields make stable
+> item binding enforceable across autosave, sentence feedback, step transitions, and completion.
+> Backup format stays at v2 with optional fields for older payloads and monotonic merge semantics.
+
 > Backup Integrity v2: schema v11 rebuilds the two Speaking tables transactionally after validating
 > legacy rows, then adds CHECK constraints for counters, source/status enums, current index, and the
 > existing ladder steps. Backup format v2 stores one exact lesson-source snapshot per lesson and

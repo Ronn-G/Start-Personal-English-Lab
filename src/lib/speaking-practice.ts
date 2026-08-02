@@ -255,3 +255,17 @@ export function buildSpeakingSession(lesson: Lesson): PracticeTask[] {
     personalizationQuestion: personalizationPrompt(c).question,
   }));
 }
+
+export function buildSpeakingTasksForIds(
+  lesson: Lesson,
+  itemIds: readonly string[],
+): PracticeTask[] {
+  const tasks = buildSpeakingSession(lesson);
+  const selected = itemIds
+    .map((id) => tasks.find((task) => task.id === id))
+    .filter((task): task is PracticeTask => Boolean(task));
+  return selected.map((task, index) => ({
+    ...task,
+    steps: index === selected.length - 1 ? [...LADDER_STEPS] : LADDER_STEPS.slice(0, 4),
+  }));
+}

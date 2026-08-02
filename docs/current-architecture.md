@@ -1,5 +1,11 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Speaking Correctness and Concurrency: SQLite schema v12 adds a monotonic session revision,
+> persisted reveal markers, and per-item draft/check versions. Speaking commands carry a stable
+> lesson/session/item/index/step/revision binding, transitions remain server-owned, completed or
+> cancelled sessions are immutable, and targeted subsets still end with exactly one Free Speak.
+> Backup remains v2; the added fields are optional for old v2 imports and merge is monotonic.
+
 > Backup Integrity v2: SQLite schema v11 adds Speaking integrity CHECK constraints without changing
 > ladder transitions. Backup format v2 includes exact source/transcript snapshots, strict Speaking
 > validation, idempotent lesson/session remap, per-type preview counts, and post-import verification.

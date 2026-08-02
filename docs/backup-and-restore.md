@@ -2,7 +2,7 @@
 
 Personal English Lab exports canonical UTF-8 JSON with
 `backupFormat: "personal-english-lab"` and `backupVersion: 2`. Backup version is independent from
-the app version, SQLite schema (v11), Lesson schema (v1), and Progress schema (v1).
+the app version, SQLite schema (v12), Lesson schema (v1), and Progress schema (v1).
 
 ## What v2 contains
 
@@ -12,7 +12,8 @@ the app version, SQLite schema (v11), Lesson schema (v1), and Progress schema (v
 - One `lessonSources` snapshot per lesson, linked by stable `lessonId`. Its exact fields are
   `title`, `url`, `channel`, `originalTranscript`, `processedTranscript`, `wasTruncated`, and
   `updatedAt`. Nullable strings are represented explicitly as `null`.
-- Speaking progress and sessions, including session-scoped drafts and validated sentence checks.
+- Speaking progress and sessions, including revision, reveal markers, session-scoped drafts,
+  draft/check versions, and validated sentence checks.
 - Listening sessions, listening item progress, and `savedForRelisten` bookmarks.
 - Export/app/schema timestamps and an SHA-256 checksum over a deterministic canonical payload.
 
@@ -28,6 +29,10 @@ title/URL/channel/transcripts restore as empty and `wasTruncated` restores as `f
 the UI show an explicit warning before import. Missing optional Speaking or Listening collections
 still mean that the older backup contains no history for that feature. The original v1 checksum is
 verified before legacy Progress defaults are normalized.
+
+Speaking concurrency fields are optional when importing older backup-v2 documents. Missing values
+default to revision `0`, no session reveal markers, and empty draft/check version maps. New exports
+always include them so an active session resumes without losing its concurrency or counter semantics.
 
 Version 2 requires exactly one source record for every lesson. Missing, duplicate, orphaned,
 oversized, machine-local, or structurally unknown source data makes dry-run invalid.
@@ -45,6 +50,8 @@ oversized, machine-local, or structurally unknown source data makes dry-run inva
   remapped through source type plus stable source-item ID.
 - Session IDs are preserved unless they collide with a different lesson. One active session per
   lesson is retained according to documented progress/recency rules.
+- Speaking Merge never lowers session status or revision; progress counters merge by their monotonic
+  maximum.
 
 ## Replace policy and verification
 
