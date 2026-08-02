@@ -19,7 +19,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, 1_000_000);
     if (!isRecord(body) || !isRecord(body.lesson)) {
       throw new StorageError("VALIDATION_ERROR", "Request thiếu lesson.");
     }

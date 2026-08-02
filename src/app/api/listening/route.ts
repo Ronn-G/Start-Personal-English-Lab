@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, 32 * 1024);
     if (!isRecord(body) || typeof body.action !== "string") {
       throw new StorageError("VALIDATION_ERROR", "Lệnh listening không hợp lệ.");
     }

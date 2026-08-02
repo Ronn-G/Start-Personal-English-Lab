@@ -909,7 +909,7 @@ test("audio server synthesis queue continues after a provider failure", async ()
     status: "ready",
   }));
   assert.equal(recovered.status, "ready");
-  assert.deepEqual(queue.info(), { concurrency: 1, active: 0, queued: 0 });
+  assert.deepEqual(queue.info(), { concurrency: 1, active: 0, queued: 0, maxQueued: 24 });
 });
 test("audio preparation only permits fallback after a real failure", async () => {
   for (const status of ["queued", "generating", "ready", "cancelled"] as const) {

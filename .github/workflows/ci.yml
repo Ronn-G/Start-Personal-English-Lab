@@ -24,8 +24,12 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm test
+      - run: npm run build
       - run: npm run smoke:storage
       - run: npm run smoke:backup
       - run: npm run smoke:audio
       - run: npm run smoke:speaking
-      - run: npm run build
+      - run: npm run smoke:listening
+      - run: npm run smoke:kokoro-http
+      - run: npm run smoke:security
+      - run: npm run audit:ci

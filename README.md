@@ -3,6 +3,10 @@
 Ứng dụng local-first tạo bài học tiếng Anh từ transcript. App dùng Next.js 16 App Router,
 React 19, TypeScript và SQLite qua `node:sqlite`.
 
+App chỉ hỗ trợ một người dùng, một Node process và loopback `127.0.0.1`. Không expose app qua LAN,
+reverse proxy hoặc internet; Host/Origin hardening không phải authentication. Xem
+[local security contract](docs/local-security.md).
+
 ## Phát triển
 
 Yêu cầu Node.js 24 trở lên.
@@ -43,7 +47,7 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 11; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 12; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
 Backup version 2 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson, source/transcript,
@@ -83,7 +87,10 @@ npm run smoke:backup
 npm run smoke:audio
 npm run smoke:speaking
 npm run smoke:listening
+npm run smoke:kokoro-http
 npm run build
+npm run smoke:security
+npm run audit:ci
 ```
 
 Portable packaging được hoãn tới final release sprint sau khi app hoàn thiện chức năng.
@@ -99,5 +106,6 @@ Portable packaging remains deferred until the final release sprint.
 - [Speaking Ladder](docs/guided-speaking-ladder.md)
 - [Immersion Listening Loop](docs/immersion-listening-loop.md)
 - [Development checklist](docs/development-checklist.md)
+- [Local security contract](docs/local-security.md)
 - [Versioning và release](docs/versioning-and-release.md)
 - [License review](docs/license-review-needed.md)

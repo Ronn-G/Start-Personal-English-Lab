@@ -1,6 +1,7 @@
 .next
 node_modules
 .data
+.logs
 coverage
 .test-dist
 dist
@@ -8,11 +9,35 @@ build
 out
 *.sqlite
 *.sqlite3
+*.sqlite3-*
+*.wav
+*.log
 *.zip
 *.onnx
 *.bin
 audio-cache
+models
+temp
+tmp
 package-lock.json
 public
 src/app/*.png
 src/app/*.ico
+
+# Pre-existing formatting debt discovered when format:check moved from an allow-list.
+# Keep this explicit and shrink it as these files are otherwise edited.
+AGENTS.md
+src/app/api/backup/export/route.ts
+src/app/api/storage/migration/route.ts
+src/app/globals.css
+src/components/LegacyMigrationPanel.tsx
+src/components/lesson/GrammarSection.tsx
+src/components/lesson/IdiomsSection.tsx
+src/components/lesson/QuizSection.tsx
+src/components/ThemeSwitcher.tsx
+src/lib/legacy-storage-reader.ts
+src/lib/lesson-schema.ts
+src/lib/sentence-check.ts
+src/server/storage/data-directory.ts
+src/types/lesson.ts
+tools/smoke_storage.mjs

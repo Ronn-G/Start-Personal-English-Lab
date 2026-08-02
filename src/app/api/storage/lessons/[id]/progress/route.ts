@@ -25,7 +25,7 @@ export async function GET(_request: Request, { params }: RouteParameters) {
 
 export async function PUT(request: Request, { params }: RouteParameters) {
   try {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, 1_000_000);
     if (!isRecord(body) || !isRecord(body.progress)) {
       throw new StorageError("VALIDATION_ERROR", "Request thiếu progress.");
     }
@@ -47,7 +47,7 @@ export async function PUT(request: Request, { params }: RouteParameters) {
 
 export async function PATCH(request: Request, { params }: RouteParameters) {
   try {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, 1_000_000);
     if (!isRecord(body) || !isRecord(body.command) || typeof body.command.type !== "string") {
       throw new StorageError("VALIDATION_ERROR", "Request thiếu lệnh cập nhật tiến độ.");
     }

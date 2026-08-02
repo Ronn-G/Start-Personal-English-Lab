@@ -1,5 +1,11 @@
 # Kokoro audio lifecycle and cache
 
+Kokoro is a loopback-only Node-to-Python provider. It does not emit CORS headers and browsers must
+use `/api/audio/*`. `/tts` accepts only bounded JSON with canonical `af_sarah`, `en-us`, speed
+`0.65..1.35` and WAV config; invalid explicit values are rejected rather than defaulted or clamped.
+The HTTP layer bounds request threads and admitted TTS work while `Kokoro.create()` remains
+concurrency one. See [local security](local-security.md) for limits and safe status codes.
+
 All learning surfaces use the same canonical stack:
 
 `SpeakButton / Listening / Re-listen -> useAppAudio -> audioClient -> /api/audio/prepare -> AudioCacheService -> Kokoro`

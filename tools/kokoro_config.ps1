@@ -46,6 +46,30 @@ function Resolve-KokoroConfig {
     $voices = $env:KOKORO_VOICES_PATH
     $hostName = if ($env:KOKORO_HOST) { $env:KOKORO_HOST } else { "127.0.0.1" }
     $port = if ($env:KOKORO_PORT) { [int] $env:KOKORO_PORT } else { 5050 }
+    if ($hostName -notin @("127.0.0.1", "localhost")) {
+        throw "KOKORO_HOST must be 127.0.0.1 or localhost. LAN/public binding is unsupported."
+    }
+    if ($port -lt 1 -or $port -gt 65535) {
+        throw "KOKORO_PORT must be between 1 and 65535."
+    }
+    $baseUrl = if ($env:KOKORO_BASE_URL) { $env:KOKORO_BASE_URL.TrimEnd("/") } else { "http://${hostName}:${port}" }
+    try {
+        $baseUri = [Uri] $baseUrl
+    }
+    catch {
+        throw "KOKORO_BASE_URL is invalid."
+    }
+    if (
+        $baseUri.Scheme -ne "http" -or
+        $baseUri.Host -ne $hostName -or
+        $baseUri.Port -ne $port -or
+        $baseUri.AbsolutePath -ne "/" -or
+        $baseUri.UserInfo -or
+        $baseUri.Query -or
+        $baseUri.Fragment
+    ) {
+        throw "KOKORO_BASE_URL must exactly match the configured loopback host and port."
+    }
 
     if ($toolDir) {
         if (-not $python) { $python = Join-Path $toolDir ".venv\Scripts\python.exe" }
@@ -59,7 +83,7 @@ function Resolve-KokoroConfig {
         Voices = $voices
         Host = $hostName
         Port = $port
-        BaseUrl = if ($env:KOKORO_BASE_URL) { $env:KOKORO_BASE_URL.TrimEnd("/") } else { "http://${hostName}:${port}" }
+        BaseUrl = $baseUrl
         Server = Join-Path $ProjectRoot "tools\kokoro_server.py"
     }
 }

@@ -23,6 +23,8 @@
     "src/server/storage/legacy-migration.ts",
     "src/server/storage/sqlite-repository.ts",
     "src/server/storage/validation.ts",
+    "src/server/security/local-request.ts",
+    "src/server/security/admission.ts",
     "src/server/backup/backup.ts",
     "src/lib/audio-domain.ts",
     "src/lib/speaking-practice.ts",

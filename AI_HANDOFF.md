@@ -1,5 +1,13 @@
 # Personal English Lab — AI handoff
 
+Local Security and Dependency Hardening pins Next.js and `eslint-config-next` to 16.2.12, binds all
+supported launchers to `127.0.0.1`, validates local Host/Origin on mutations, streams bounded JSON
+bodies, and adds bounded process-local admission for Gemini and audio. Kokoro has no browser CORS,
+strict media/body/text/config validation, bounded request/TTS slots, safe errors/logs and read
+timeouts. See `docs/local-security.md`. This is defense for a local single-process app only; LAN and
+internet exposure remain unsupported. Repository/model provenance is still unresolved and release
+remains blocked.
+
 Speaking Correctness and Concurrency raises SQLite to schema 12 while keeping backup format 2.
 Speaking mutations now use stable item bindings plus session revisions, enforce server-owned ladder
 transitions, make reveal/completion counters idempotent, and reject writes to finished sessions.

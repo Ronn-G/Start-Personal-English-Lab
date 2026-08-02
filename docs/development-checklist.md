@@ -25,6 +25,9 @@ npm run smoke:audio
 npm run smoke:speaking
 npm run smoke:listening
 npm run build
+npm run smoke:kokoro-http
+npm run smoke:security
+npm run audit:ci
 ```
 
 Khi sửa lesson progress, phải test tối thiểu: stable item ID, reload, cô lập giữa lessons, command
@@ -39,6 +42,10 @@ Continue/Re-listen; Speaking Ladder giữ progress riêng; backup cũ, Merge, Re
 Để kiểm tra audio development, cấu hình Kokoro một lần trong `.env.local`, chạy
 `npm run dev:full`, rồi xác nhận `/health`, port 5050, Kokoro playback, browser fallback và khả
 năng quay lại Kokoro sau khi server khởi động lại. Không commit `.env.local` hoặc `.logs`.
+
+Khi sửa network/API/provider, phải kiểm Host localhost/127/IPv6 loopback, same-origin và no-Origin
+policy, bounded body 413/415, admission 429/recovery, Kokoro health dưới burst, safe errors và backup
+dry-run. Không dùng `npm audit fix --force`; audit waiver phải exact-ID, có lý do và ngày hết hạn.
 
 Trước commit chạy `git diff --check`, `git diff --stat`, `git status --short`. Sau commit chạy
 `git show --stat --oneline HEAD` và `git status --short`.

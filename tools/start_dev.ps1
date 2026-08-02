@@ -64,7 +64,21 @@ try {
         Write-Host "Kokoro ready."
     }
 
-    Write-Host "Starting Next.js at http://localhost:3000"
+    $appHealth = "http://127.0.0.1:3000/api/storage/health"
+    try {
+        $existingApp = Invoke-RestMethod -Uri $appHealth -TimeoutSec 2
+    }
+    catch {
+        $existingApp = $null
+    }
+    if ($existingApp.status -eq "ok") {
+        throw "Personal English Lab is already running at http://127.0.0.1:3000."
+    }
+    $appPort = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+    if ($appPort) {
+        throw "Port 3000 is occupied by another process. Personal English Lab was not started."
+    }
+    Write-Host "Starting Next.js at http://127.0.0.1:3000"
     Push-Location $ProjectRoot
     try {
         & npm.cmd run dev

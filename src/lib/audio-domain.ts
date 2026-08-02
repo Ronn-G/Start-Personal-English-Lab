@@ -9,6 +9,14 @@ export const AUDIO_DEFAULTS = {
   format: "wav",
 } as const;
 
+export const AUDIO_SUPPORTED_VOICES = ["af_sarah"] as const;
+export const AUDIO_SUPPORTED_LANGUAGES = ["en-us"] as const;
+export const AUDIO_SUPPORTED_MODELS = ["kokoro-v1.0"] as const;
+export const AUDIO_MIN_SPEED = 0.65;
+export const AUDIO_MAX_SPEED = 1.35;
+export const AUDIO_MAX_TEXT_CHARS = 650;
+export const AUDIO_MAX_TEXT_BYTES = 2_600;
+
 export interface AudioConfig {
   voice: string;
   speed: number;
@@ -20,6 +28,7 @@ export interface AudioConfig {
 
 export type AudioErrorCode =
   | "INVALID_AUDIO_REQUEST"
+  | "AUDIO_CAPACITY_EXCEEDED"
   | "KOKORO_UNAVAILABLE"
   | "KOKORO_TIMEOUT"
   | "KOKORO_INVALID_RESPONSE"
@@ -68,6 +77,51 @@ export function rateToKokoroSpeed(rate: number): number {
 }
 
 export function resolveAudioConfig(partial: Partial<AudioConfig> = {}): AudioConfig {
+  if (
+    partial.voice !== undefined &&
+    (typeof partial.voice !== "string" ||
+      !AUDIO_SUPPORTED_VOICES.includes(
+        partial.voice.trim() as (typeof AUDIO_SUPPORTED_VOICES)[number],
+      ))
+  ) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  if (
+    partial.speed !== undefined &&
+    (typeof partial.speed !== "number" ||
+      !Number.isFinite(partial.speed) ||
+      partial.speed < AUDIO_MIN_SPEED ||
+      partial.speed > AUDIO_MAX_SPEED)
+  ) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  if (
+    partial.language !== undefined &&
+    (typeof partial.language !== "string" ||
+      !AUDIO_SUPPORTED_LANGUAGES.includes(
+        partial.language.trim() as (typeof AUDIO_SUPPORTED_LANGUAGES)[number],
+      ))
+  ) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  if (
+    partial.modelVersion !== undefined &&
+    (typeof partial.modelVersion !== "string" ||
+      !AUDIO_SUPPORTED_MODELS.includes(
+        partial.modelVersion.trim() as (typeof AUDIO_SUPPORTED_MODELS)[number],
+      ))
+  ) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  if (
+    partial.normalizationVersion !== undefined &&
+    partial.normalizationVersion !== AUDIO_DEFAULTS.normalizationVersion
+  ) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
+  if (partial.format !== undefined && partial.format !== AUDIO_DEFAULTS.format) {
+    throw new Error("INVALID_AUDIO_REQUEST");
+  }
   return {
     voice: partial.voice?.trim() || AUDIO_DEFAULTS.voice,
     speed:
@@ -90,7 +144,11 @@ export function buildCanonicalAudioRequest(
   partial: Partial<AudioConfig> = {},
 ): CanonicalAudioRequest {
   const normalized = normalizeAudioText(text);
-  if (!normalized || normalized.length > 650) {
+  if (
+    !normalized ||
+    normalized.length > AUDIO_MAX_TEXT_CHARS ||
+    new TextEncoder().encode(normalized).byteLength > AUDIO_MAX_TEXT_BYTES
+  ) {
     throw new Error("INVALID_AUDIO_REQUEST");
   }
   return { text: normalized, ...resolveAudioConfig(partial) };

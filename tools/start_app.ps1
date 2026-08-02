@@ -7,7 +7,8 @@ $KokoroStdout = Join-Path $LogRoot "kokoro-app.stdout.log"
 $KokoroStderr = Join-Path $LogRoot "kokoro-app.stderr.log"
 $NextStdout = Join-Path $LogRoot "next-app.stdout.log"
 $NextStderr = Join-Path $LogRoot "next-app.stderr.log"
-$NodeAppUrl = "http://localhost:3000"
+$NodeAppUrl = "http://127.0.0.1:3000"
+$NodeHealthUrl = "$NodeAppUrl/api/storage/health"
 
 . (Join-Path $PSScriptRoot "kokoro_config.ps1")
 
@@ -42,6 +43,10 @@ try {
     Assert-KokoroConfig -Config $config
 
     if (-not (Test-KokoroHealth -BaseUrl $config.BaseUrl)) {
+        $occupied = Get-NetTCPConnection -LocalPort $config.Port -State Listen -ErrorAction SilentlyContinue
+        if ($occupied) {
+            throw "Port $($config.Port) is occupied, but Kokoro health failed at $($config.BaseUrl)/health."
+        }
         $arguments = @(
             "`"$($config.Server)`"",
             "--host", $config.Host,
@@ -62,7 +67,11 @@ try {
         }
     }
 
-    if (-not (Test-Url -Url $NodeAppUrl)) {
+    if (-not (Test-Url -Url $NodeHealthUrl)) {
+        $occupied = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+        if ($occupied) {
+            throw "Port 3000 is occupied, but Personal English Lab health failed at $NodeHealthUrl."
+        }
         Start-Process `
             -FilePath "npm.cmd" `
             -ArgumentList @("run", "dev") `
@@ -71,7 +80,7 @@ try {
             -RedirectStandardError $NextStderr `
             -WindowStyle Hidden | Out-Null
 
-        if (-not (Wait-Until -TimeoutSeconds 60 -Condition { Test-Url -Url $NodeAppUrl })) {
+        if (-not (Wait-Until -TimeoutSeconds 60 -Condition { Test-Url -Url $NodeHealthUrl })) {
             throw "Next.js did not become ready. See $NextStderr"
         }
     }

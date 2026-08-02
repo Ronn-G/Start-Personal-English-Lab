@@ -71,9 +71,21 @@ export class ServerSynthesisQueue {
   private shared = new Map<string, Promise<AudioResult>>();
   private active = 0;
 
+  constructor(private readonly maxPending = 24) {}
+
   enqueue(key: string, priority: number, task: () => Promise<AudioResult>): Promise<AudioResult> {
     const existing = this.shared.get(key);
     if (existing) return existing;
+    if (this.pending.length >= this.maxPending) {
+      return Promise.reject(
+        new AudioServiceError(
+          "AUDIO_CAPACITY_EXCEEDED",
+          429,
+          true,
+          "Audio preparation is busy. Please try again shortly.",
+        ),
+      );
+    }
     let resolve!: (result: AudioResult) => void;
     let reject!: (reason: unknown) => void;
     const promise = new Promise<AudioResult>((onResolve, onReject) => {
@@ -87,7 +99,12 @@ export class ServerSynthesisQueue {
   }
 
   info() {
-    return { concurrency: 1, active: this.active, queued: this.pending.length };
+    return {
+      concurrency: 1,
+      active: this.active,
+      queued: this.pending.length,
+      maxQueued: this.maxPending,
+    };
   }
 
   private pump() {
@@ -174,7 +191,16 @@ export function resolveKokoroBaseUrl(value = process.env.KOKORO_BASE_URL): strin
   const normalized = value?.trim().replace(/\/+$/, "");
   if (!normalized) return "http://127.0.0.1:5050";
   const url = new URL(normalized);
-  if (!["http:", "https:"].includes(url.protocol)) {
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "::1"].includes(hostname) ||
+    url.username ||
+    url.password ||
+    (url.pathname !== "/" && url.pathname !== "") ||
+    url.search ||
+    url.hash
+  ) {
     throw new Error("INVALID_KOKORO_BASE_URL");
   }
   return url.toString().replace(/\/+$/, "");
@@ -187,6 +213,7 @@ export function serverAudioQueueInfo() {
 function safeSummary(code: AudioErrorCode): string {
   const summaries: Record<AudioErrorCode, string> = {
     INVALID_AUDIO_REQUEST: "The audio request is invalid.",
+    AUDIO_CAPACITY_EXCEEDED: "Audio preparation is busy. Please try again shortly.",
     KOKORO_UNAVAILABLE: "Kokoro is unavailable.",
     KOKORO_TIMEOUT: "Kokoro took too long to respond.",
     KOKORO_INVALID_RESPONSE: "Kokoro returned invalid audio.",

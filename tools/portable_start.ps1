@@ -7,7 +7,7 @@ $Python = Join-Path $Root "tts\python\python.exe"
 $KokoroServer = Join-Path $Root "tts\kokoro_server.py"
 $Model = Join-Path $Root "tts\models\kokoro-v1.0.onnx"
 $Voices = Join-Path $Root "tts\models\voices-v1.0.bin"
-$AppUrl = "http://localhost:3000"
+$AppUrl = "http://127.0.0.1:3000"
 $HealthUrl = "http://127.0.0.1:5050/health"
 
 $DataBase = $env:LOCALAPPDATA
@@ -34,6 +34,10 @@ foreach ($requiredFile in @($Node, $Python, $KokoroServer, $Model, $Voices)) {
 }
 
 if (-not (Test-Url $HealthUrl)) {
+    $occupied = Get-NetTCPConnection -LocalPort 5050 -State Listen -ErrorAction SilentlyContinue
+    if ($occupied) {
+        throw "Port 5050 is occupied, but Kokoro health failed at $HealthUrl."
+    }
     Start-Process -FilePath $Python `
         -ArgumentList @("`"$KokoroServer`"", "--model", "`"$Model`"", "--voices", "`"$Voices`"") `
         -WorkingDirectory (Join-Path $Root "tts") `
@@ -41,6 +45,12 @@ if (-not (Test-Url $HealthUrl)) {
 }
 
 if (-not (Test-Url $AppUrl)) {
+    $occupied = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+    if ($occupied) {
+        throw "Port 3000 is occupied by another process. Personal English Lab was not started."
+    }
+    $env:HOSTNAME = "127.0.0.1"
+    $env:PORT = "3000"
     Start-Process -FilePath $Node `
         -ArgumentList @("server.js") `
         -WorkingDirectory $AppRoot `

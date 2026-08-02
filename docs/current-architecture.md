@@ -1,5 +1,10 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Local Security and Dependency Hardening: supported launchers bind Next.js/Kokoro to loopback;
+> mutations validate local Host and same Origin when present; JSON bodies and expensive local work
+> are bounded. Kokoro is Node-only with no CORS, strict canonical config and concurrency-one model
+> synthesis behind bounded HTTP/TTS admission. This does not support LAN or internet exposure.
+
 > Speaking Correctness and Concurrency: SQLite schema v12 adds a monotonic session revision,
 > persisted reveal markers, and per-item draft/check versions. Speaking commands carry a stable
 > lesson/session/item/index/step/revision binding, transitions remain server-owned, completed or
@@ -78,22 +83,24 @@ SavedLesson/GenerateLessonResponse
           -> callback onAnswer(questionIndex)
           -> LessonDisplay lưu answeredQuestions vào localStorage
 
-Text cần đọc -> SpeakButton
-  -> POST http://127.0.0.1:5050/tts
-  -> Kokoro ONNX -> WAV trong memory -> object URL -> HTML Audio
-  -> timeout 30 giây hoặc lỗi: hiện chỉ báo "Kokoro chưa chạy" và console.error
+Text cần đọc -> useAppAudio/SpeakButton
+  -> POST /api/audio/prepare -> Node cache/queue -> Kokoro loopback /tts
+  -> WAV đã kiểm tra -> cache cục bộ -> /api/audio/[key] -> HTML Audio
+  -> lỗi Kokoro sau thao tác Play của người dùng: Web Speech browser fallback có trạng thái rõ ràng
 
 ThemeSwitcher/layout bootstrap
   -> đọc/ghi personal-english-lab-theme
 
-Nền tảng song song từ Sprint 1 (chưa nối vào UI)
+Source of truth hiện tại
   storage-client -> /api/storage/* -> async repository -> node:sqlite
   -> PERSONAL_ENGLISH_LAB_DATA_DIR/personal-english-lab.sqlite3
 ```
 
-### Sai lệch quan trọng giữa tài liệu cũ và code
+### Ghi chú lịch sử từ Sprint 0
 
-`AI_HANDOFF.md` và `README.md` nói rằng TTS fallback sang Web Speech API. Code hiện tại trong `SpeakButton.tsx` không gọi `window.speechSynthesis`; vì vậy fallback phát âm này **không tồn tại trong runtime hiện tại**. Web Speech đang được dùng cho nhận dạng giọng nói (`SpeechRecognition`) trong luyện nói, không phải cho TTS. Sprint 0 chỉ ghi nhận, không sửa hành vi.
+Sprint 0 từng ghi nhận Web Speech TTS fallback chưa tồn tại. Ghi nhận đó đã được thay thế từ
+Sprint 5: `useAppAudio` hiện giữ Kokoro là đường ưu tiên và chỉ dùng browser voice sau lỗi thực,
+sau thao tác phát của người dùng. Web Speech Recognition cho luyện nói vẫn là luồng riêng.
 
 ## 3. Schema TypeScript hiện tại
 
