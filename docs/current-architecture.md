@@ -1,5 +1,12 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Backup Capacity hotfix: the 8,000,000-byte limit belongs to a serialized backup-v2 JSON artifact,
+> not to SQLite. Routine lesson, progress, Speaking, Listening, bookmark, and migration transactions
+> validate only their local invariants and no longer serialize the whole database before commit.
+> `GET /api/backup/status` reports an exact read-only estimate; the Backup panel alone disables export
+> when oversized. Export/import validation, full-fidelity content, and schema/backup versions remain
+> unchanged.
+
 > Listening Coherence and UI Testing Foundation: SQLite schema v13 persists an immutable, bounded
 > selected-sentence snapshot and coherent track for every Listening session. Active sessions survive
 > lesson edits; Practice Again uses current content; Reveal All is selected-only; backup v2 optionally

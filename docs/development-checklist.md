@@ -46,6 +46,12 @@ reload; deterministic v12 backfill/rollback; old-v2 backup import; lesson mutati
 source behavior; and Practice Again from current lesson content. Run jsdom component tests in addition
 to Node/service tests, and describe them as component tests rather than browser E2E coverage.
 
+When changing backup capacity handling, keep the JSON artifact boundary separate from routine SQLite
+writes. Verify real UTF-8 exports below, at, and above 8,000,000 bytes; then verify lesson progress,
+Speaking, Listening, bookmarks, reload, and record-level validation while the database is too large
+for one backup file. The Backup panel may disable export, but it must not surface that condition as a
+global learning-progress error.
+
 Để kiểm tra audio development, cấu hình Kokoro một lần trong `.env.local`, chạy
 `npm run dev:full`, rồi xác nhận `/health`, port 5050, Kokoro playback, browser fallback và khả
 năng quay lại Kokoro sau khi server khởi động lại. Không commit `.env.local` hoặc `.logs`.

@@ -32,6 +32,7 @@ import {
 } from "../src/server/backup/backup";
 import { ListeningService } from "../src/server/listening/listening-service";
 import { SqliteStorageRepository } from "../src/server/storage/sqlite-repository";
+import { StorageError } from "../src/server/storage/errors";
 import {
   CURRENT_DATABASE_VERSION,
   MIGRATIONS,
@@ -603,6 +604,71 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
   );
   assert.equal(execute(service, { action: "status", lessonId: otherLesson.id }).session, null);
   database.close();
+});
+
+test("listening notes, counters, and bookmarks persist when export is oversized", () => {
+  const database = databaseAt();
+  const lesson = fixtureLesson();
+  const otherLesson = fixtureLesson("Local note limit lesson");
+  insertLesson(database, lesson);
+  insertLesson(database, otherLesson);
+  const service = new ListeningService(database);
+  try {
+    let state = execute(service, { action: "start", lessonId: lesson.id });
+    database
+      .prepare("UPDATE lessons SET original_transcript=?,processed_transcript=? WHERE id=?")
+      .run("é".repeat(2_000_000), "é".repeat(2_000_000), lesson.id);
+    assert.throws(() => exportBackup(database, "0.1.0"), /vượt quá giới hạn/);
+
+    state = execute(service, {
+      action: "save_first_listen",
+      lessonId: lesson.id,
+      sessionId: state.session!.id,
+      comprehension: "some_parts",
+      note: "A short note persists independently of backup size.",
+    });
+    const selected = state.items[0];
+    execute(service, {
+      action: "record_listen",
+      lessonId: lesson.id,
+      sessionId: state.session!.id,
+      itemId: selected.id,
+    });
+    execute(service, {
+      action: "set_saved_for_relisten",
+      lessonId: lesson.id,
+      sessionId: state.session!.id,
+      itemId: selected.id,
+      saved: true,
+    });
+
+    const reloaded = execute(new ListeningService(database), {
+      action: "status",
+      lessonId: lesson.id,
+    });
+    assert.equal(reloaded.session!.currentStep, "check_meaning");
+    assert.equal(reloaded.items[0].progress.listenCount, 1);
+    assert.equal(reloaded.items[0].progress.savedForRelisten, true);
+
+    const other = execute(service, { action: "start", lessonId: otherLesson.id });
+    assert.throws(
+      () =>
+        execute(service, {
+          action: "save_first_listen",
+          lessonId: otherLesson.id,
+          sessionId: other.session!.id,
+          comprehension: "some_parts",
+          note: "x".repeat(1001),
+        }),
+      (error) =>
+        error instanceof StorageError &&
+        error.code === "VALIDATION_ERROR" &&
+        error.message.includes("1000") &&
+        !error.message.includes("backup"),
+    );
+  } finally {
+    database.close();
+  }
 });
 
 test("listening session snapshot stays coherent across steps and lesson mutation", async () => {

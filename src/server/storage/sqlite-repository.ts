@@ -22,7 +22,6 @@ import {
   type UpdateLessonInput,
 } from "./domain";
 import { StorageError } from "./errors";
-import { assertBackupCapacity } from "../backup/backup";
 import {
   assertValidId,
   assertValidLesson,
@@ -167,7 +166,7 @@ export class SqliteStorageRepository implements StorageRepository {
       if (Number(activeLessonCount.count) >= MAX_STORED_LESSONS)
         throw new StorageError(
           "VALIDATION_ERROR",
-          `Ứng dụng hỗ trợ tối đa ${MAX_STORED_LESSONS} bài học để luôn có thể sao lưu.`,
+          `Ứng dụng hỗ trợ tối đa ${MAX_STORED_LESSONS} bài học.`,
         );
       this.database
         .prepare(
@@ -192,7 +191,6 @@ export class SqliteStorageRepository implements StorageRepository {
       if (input.initialProgress !== undefined) {
         this.insertProgress(id, input.initialProgress, PROGRESS_SCHEMA_VERSION, now);
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -254,7 +252,6 @@ export class SqliteStorageRepository implements StorageRepository {
       } else {
         this.database.prepare("DELETE FROM listening_item_progress WHERE lesson_id=?").run(id);
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -319,7 +316,6 @@ export class SqliteStorageRepository implements StorageRepository {
             updated_at = excluded.updated_at`,
         )
         .run(lessonId, progressVersion, JSON.stringify(progress), now, now);
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -380,7 +376,6 @@ export class SqliteStorageRepository implements StorageRepository {
           row?.created_at ?? now,
           now,
         );
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");

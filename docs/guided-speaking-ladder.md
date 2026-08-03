@@ -28,8 +28,9 @@ to exactly its final task; it is not added to every task.
 SQLite schema v12 stores a non-negative session `revision`. Every item mutation binds to lesson ID,
 session ID, stable practice item ID, current item index, current step, and expected revision. Inside a
 `BEGIN IMMEDIATE` transaction the service reloads the active row, validates the binding and source,
-performs a conditional update, and requires exactly one changed row before updating progress and
-checking backup capacity. Any failure rolls back the whole command.
+performs a conditional update, and requires exactly one changed row before updating progress. Any
+record, binding, constraint, or concurrency failure rolls back the whole command. The size of a
+separate backup artifact does not block a valid Speaking mutation.
 
 Successful ladder/session mutations increment revision once. A stale request returns `409 CONFLICT`,
 does not change counters, and makes the UI reload the latest state. This revision-based design is the
@@ -37,7 +38,7 @@ idempotency mechanism for advance, reveal, draft, and completion commands.
 
 Completed and cancelled sessions are immutable. Start New, Practice Again, targeted practice, and
 Review cancel the old active session and insert the replacement in one transaction. If insertion or
-backup validation fails, the old session remains active.
+record validation fails, the old session remains active.
 
 ## Counters and ratings
 

@@ -90,10 +90,18 @@ The exact serialized backup limit is **8,000,000 UTF-8 bytes**. Export validates
 a file. The import request limit is **8,064,000 bytes**, leaving explicit JSON-envelope overhead, and
 the browser rejects files above the backup limit before dry-run.
 
-Every app write that can change backed-up state runs inside a transaction and validates the exact v2
-snapshot before commit. The write is rolled back if the resulting database would exceed 8,000,000
-bytes or fail backup validation. This also applies to Merge imports and legacy migration, so two
-individually valid databases cannot be combined into an unbackupable state.
+The 8,000,000-byte value is an **export artifact limit**, not a SQLite capacity limit. Routine lesson,
+Progress, Speaking, Listening, bookmark, note, draft, check, and counter writes validate their own
+record and collection invariants, then commit without constructing a full backup. An existing
+database may therefore be larger than one JSON backup file while learning data continues to persist.
+Merge may also produce such a database when the incoming file itself is valid and within the import
+boundary. Replace/Merge validation, identity remapping, foreign-key checks, and transactional
+rollback remain unchanged.
+
+`GET /api/backup/status` builds a read-only snapshot to report the current estimated byte count,
+configured maximum, and whether export is available. If the estimate is too large, only export is
+disabled. The Backup panel explains that learning data is still saved; lesson screens do not show a
+global backup-capacity error. Export returns a clear bounded error and does not mutate the database.
 
 Collection limits are:
 
@@ -103,15 +111,33 @@ Collection limits are:
 - Listening sessions: 2,000;
 - Listening item progress: 25,000.
 
-The 500-lesson limit is enforced when a lesson is created. Speaking and Listening session limits are
-enforced when a new session is created. Item-progress ceilings cover the bounded set of source items
-available across 500 canonical lessons. Boundary tests cover limit minus one, exact limit, and limit
-plus one; byte tests use the same predicate as export/import validation.
+The 500-lesson limit remains a product collection cap independent from the backup byte limit.
+Speaking and Listening session limits are likewise product limits enforced when a new session is
+created. Item-progress ceilings cover the bounded set of source items available across canonical
+lessons. Boundary tests cover limit minus one, exact limit, and limit plus one. Artifact tests build
+real exports at 7,999,999, 8,000,000, and 8,000,001 UTF-8 bytes.
 
 Transcripts are capped at 2,000,000 characters and 4,000,000 UTF-8 bytes per field; source labels,
 URLs, drafts, checks, hashes, and notes have smaller field-specific limits. Diagnostics name the
 exact JSON path (for example `$.lessonSources[2].originalTranscript` or
 `$.speakingSessions[1].currentStep`) and never include full transcript content.
+
+## Oversized backup troubleshooting
+
+When the panel says **Bản sao lưu hiện quá dung lượng**:
+
+1. Continue learning normally; do not delete lessons or transcripts merely to restore progress
+   writes.
+2. Check the estimated and maximum byte counts in the Backup panel.
+3. Export remains unavailable until the current v2 JSON artifact fits the boundary. No automatic
+   truncation or destructive migration occurs.
+4. If data must be moved immediately, make a SQLite-aware copy while the app is stopped; copying only
+   the main file while WAL is active can miss committed pages.
+
+Future backup v3 options are ZIP compression, multipart archives, streaming export/import, or
+separating source/transcript payloads from Progress. They are deliberately not implemented by this
+hotfix; any new format must preserve full-fidelity source restore, checksums, transactional
+Merge/Replace, conflict remapping, and v1/v2 compatibility.
 
 ## Integrity and recovery drill
 

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const port = "3217";
 const temporaryRoot = await mkdtemp(join(tmpdir(), "pel-storage-smoke-"));
@@ -102,6 +103,51 @@ try {
   const listResponse = await fetch(`http://127.0.0.1:${port}/api/storage/lessons`);
   const { lessons } = await listResponse.json();
 
+  const databasePath = join(dataDirectory, "personal-english-lab.sqlite3");
+  const oversized = new DatabaseSync(databasePath);
+  const maximumValidUtf8Transcript = "é".repeat(2_000_000);
+  oversized
+    .prepare("UPDATE lessons SET original_transcript=?,processed_transcript=? WHERE id=?")
+    .run(maximumValidUtf8Transcript, maximumValidUtf8Transcript, lesson.id);
+  oversized.close();
+
+  const capacityResponse = await fetch(`http://127.0.0.1:${port}/api/backup/status`);
+  if (!capacityResponse.ok) throw new Error(`Backup status smoke failed (${capacityResponse.status}).`);
+  const capacity = await capacityResponse.json();
+  const oversizedExportResponse = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
+  const oversizedExportError = await oversizedExportResponse.json();
+  const learnedResponse = await fetch(
+    `http://127.0.0.1:${port}/api/storage/lessons/${lesson.id}/progress`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        command: {
+          type: "mark_learning_item_reviewed",
+          itemId: canonicalLesson.vocabulary[0].id,
+        },
+      }),
+    },
+  );
+  if (!learnedResponse.ok) {
+    throw new Error(`Oversized database progress smoke failed (${learnedResponse.status}).`);
+  }
+  const reloadedProgressResponse = await fetch(
+    `http://127.0.0.1:${port}/api/storage/lessons/${lesson.id}/progress`,
+  );
+  const reloadedProgress = await reloadedProgressResponse.json();
+
+  const reduced = new DatabaseSync(databasePath);
+  reduced
+    .prepare("UPDATE lessons SET original_transcript='reduced',processed_transcript='reduced' WHERE id=?")
+    .run(lesson.id);
+  reduced.close();
+  const recoveredExportResponse = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
+  if (!recoveredExportResponse.ok) {
+    throw new Error(`Recovered backup export smoke failed (${recoveredExportResponse.status}).`);
+  }
+  await recoveredExportResponse.arrayBuffer();
+
   const deleteResponse = await fetch(
     `http://127.0.0.1:${port}/api/storage/lessons/${lesson.id}`,
     { method: "DELETE" },
@@ -120,6 +166,15 @@ try {
         migrationRetryIdempotent: migrationRetry.preview.existingLessons === 1,
         lessonCreatedWithStableId: /^[0-9a-f-]{36}$/.test(lesson.id),
         progressRoundTrip: progress.progress.lessonId === lessonId && Boolean(progress.progress.quizItems[canonicalLesson.quiz[0].id]),
+        oversizedBackupDetected:
+          capacity.state === "too_large" && capacity.exportAvailable === false,
+        oversizedExportRejected:
+          oversizedExportResponse.status === 400 &&
+          String(oversizedExportError.error).includes("vẫn được lưu bình thường"),
+        oversizedDatabaseProgressPersisted:
+          reloadedProgress.progress.progress.learningItems[canonicalLesson.vocabulary[0].id]
+            ?.status === "learned",
+        exportRecoveredAfterDataReduction: recoveredExportResponse.ok,
         listReturnsSummaries: lessons.length === 2 && lessons.every((item) => !("lesson" in item)),
         lessonSoftDeleted: deleteResponse.status === 204,
         databaseCreated: database.isFile(),

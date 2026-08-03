@@ -1,10 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ImportPreview } from "@/server/backup/backup";
+import type { BackupCapacityStatus, ImportPreview } from "@/server/backup/backup";
 
 const MAX_FILE_BYTES = 8_000_000;
+const formatBytes = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+
+async function loadBackupCapacity(signal?: AbortSignal): Promise<BackupCapacityStatus> {
+  const response = await fetch("/api/backup/status", { cache: "no-store", signal });
+  const body = (await response.json()) as BackupCapacityStatus & { error?: string };
+  if (!response.ok) throw new Error(body.error ?? "Không thể kiểm tra trạng thái sao lưu.");
+  return body;
+}
 
 interface BackupRestorePanelProps {
   lessonCount: number;
@@ -17,7 +25,38 @@ export default function BackupRestorePanel({ lessonCount, onImported }: BackupRe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [capacity, setCapacity] = useState<BackupCapacityStatus>();
+  const [capacityError, setCapacityError] = useState<string>();
   const input = useRef<HTMLInputElement>(null);
+
+  const refreshCapacity = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const body = await loadBackupCapacity(signal);
+      setCapacity(body);
+      setCapacityError(undefined);
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setCapacityError(
+        reason instanceof Error ? reason.message : "Không thể kiểm tra trạng thái sao lưu.",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadBackupCapacity(controller.signal)
+      .then((body) => {
+        setCapacity(body);
+        setCapacityError(undefined);
+      })
+      .catch((reason) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setCapacityError(
+          reason instanceof Error ? reason.message : "Không thể kiểm tra trạng thái sao lưu.",
+        );
+      });
+    return () => controller.abort();
+  }, [lessonCount]);
 
   async function exportFile() {
     setBusy(true);
@@ -39,6 +78,7 @@ export default function BackupRestorePanel({ lessonCount, onImported }: BackupRe
       anchor.click();
       URL.revokeObjectURL(url);
       setNotice(`Đã tạo backup lúc ${new Date().toLocaleString("vi-VN")}.`);
+      await refreshCapacity();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Không thể tạo backup.");
     } finally {
@@ -130,6 +170,7 @@ export default function BackupRestorePanel({ lessonCount, onImported }: BackupRe
       setPreview(undefined);
       if (input.current) input.current.value = "";
       await onImported();
+      await refreshCapacity();
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -153,10 +194,47 @@ export default function BackupRestorePanel({ lessonCount, onImported }: BackupRe
         Dữ liệu được lưu trên máy này. Hiện có {lessonCount} bài học. API key, đường dẫn máy và
         audio cache không nằm trong backup.
       </p>
+      {capacity ? (
+        <div
+          className={`mt-4 rounded-xl border p-4 text-sm ${
+            capacity.state === "ready"
+              ? "border-correct bg-background text-body"
+              : "border-accent bg-background text-body"
+          }`}
+          role="status"
+        >
+          <p className="font-extrabold text-heading">
+            {capacity.state === "ready"
+              ? "Sẵn sàng sao lưu"
+              : capacity.state === "too_large"
+                ? "Bản sao lưu hiện quá dung lượng"
+                : "Chưa thể kiểm tra bản sao lưu"}
+          </p>
+          <p className="mt-1">
+            Dung lượng ước tính:{" "}
+            {capacity.estimatedBytes === null
+              ? "chưa xác định"
+              : `${formatBytes(capacity.estimatedBytes)} byte`}{" "}
+            · Giới hạn một tệp: {formatBytes(capacity.maximumBytes)} byte.
+          </p>
+          {capacity.reason ? <p className="mt-2 font-semibold">{capacity.reason}</p> : null}
+          {capacity.state === "too_large" ? (
+            <p className="mt-2">
+              Bạn vẫn có thể học và lưu tiến độ bình thường. Hãy quản lý hoặc chia nhỏ bản sao lưu
+              trước khi chuyển dữ liệu sang máy khác.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {capacityError ? (
+        <p className="mt-3 text-sm font-semibold text-body" role="status">
+          {capacityError}
+        </p>
+      ) : null}
       <div className="mt-4 flex flex-wrap gap-3">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || capacity?.exportAvailable === false}
           onClick={() => void exportFile()}
           className="rounded-xl bg-primary px-5 py-3 font-bold text-white disabled:opacity-50"
         >

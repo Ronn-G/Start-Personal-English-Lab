@@ -1,5 +1,12 @@
 # Personal English Lab — AI handoff
 
+Backup Capacity hotfix keeps SQLite schema 13 and backup format 2 while separating routine database
+writes from the 8,000,000-byte JSON artifact boundary. Progress, Speaking, Listening, bookmarks,
+notes, drafts, checks, lesson updates, legacy migration, and valid Merge imports no longer construct
+or gate on a full v2 snapshot before commit. Export and incoming file validation retain the byte
+limit and full-fidelity validators. `/api/backup/status` reports estimated/max bytes and disables only
+export when oversized; learning data remains writable.
+
 Listening Coherence and UI Testing Foundation raises SQLite to schema 13 while backup remains v2.
 Each Listening session owns an immutable, deterministic selection snapshot (at most eight items) and
 one track built from exactly those sentences. Lesson updates do not alter active sessions; stale

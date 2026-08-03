@@ -49,6 +49,7 @@ import {
   checksum,
   exportBackup,
   importBackup,
+  inspectBackupCapacity,
   mergeProgress,
   previewImport,
   isBackupByteLengthAllowed,
@@ -407,9 +408,10 @@ test("new database v3 repository lists summaries and preserves canonical IDs and
   assert.deepEqual(await repo.getLessonProgress(source.id), saved);
   opened.database.close();
 });
-test("repository rejects an update that would make the database too large to back up and rolls back", async () => {
-  const database = new DatabaseSync(":memory:");
-  runMigrations(database);
+test("routine lesson and progress writes persist when the backup artifact is too large", async () => {
+  const path = join(temp(), "oversized-existing.sqlite3");
+  const opened = openStorageDatabase(path);
+  const { database } = opened;
   const repository = new SqliteStorageRepository(database);
   const item = lesson();
   await repository.createLesson({
@@ -422,29 +424,68 @@ test("repository rejects an update that would make the database too large to bac
   });
 
   const maximumUtf8Transcript = "é".repeat(2_000_000);
-  await assert.rejects(
-    () =>
-      repository.updateLesson(item.id, {
-        source: {
-          originalTranscript: maximumUtf8Transcript,
-          processedTranscript: maximumUtf8Transcript,
-        },
-      }),
+  await repository.updateLesson(item.id, {
+    source: {
+      originalTranscript: maximumUtf8Transcript,
+      processedTranscript: maximumUtf8Transcript,
+    },
+  });
+  assert.equal(inspectBackupCapacity(database, "0.1.0").state, "too_large");
+  assert.throws(
+    () => exportBackup(database, "0.1.0"),
     (error) =>
       error instanceof StorageError &&
       error.code === "VALIDATION_ERROR" &&
-      error.message.includes(String(MAX_BACKUP_BYTES)),
+      error.message.includes(String(MAX_BACKUP_BYTES)) &&
+      error.message.includes("vẫn được lưu bình thường"),
   );
+
+  await repository.saveLessonProgress(item.id, progress(item));
+  await repository.updateLessonProgress(item.id, {
+    type: "mark_learning_item_reviewed",
+    itemId: item.vocabulary[0].id,
+  });
+  await repository.updateLessonProgress(item.id, {
+    type: "record_quiz_answer",
+    itemId: item.quiz[0].id,
+    selectedAnswer: item.quiz[0].correctAnswer,
+  });
 
   assert.deepEqual((await repository.getLesson(item.id))?.source, {
     title: undefined,
     url: undefined,
     channel: undefined,
-    originalTranscript: "original",
-    processedTranscript: "processed",
+    originalTranscript: maximumUtf8Transcript,
+    processedTranscript: maximumUtf8Transcript,
     wasTruncated: false,
   });
-  assert.doesNotThrow(() => exportBackup(database, "0.1.0"));
+  database.close();
+
+  const reloaded = openStorageDatabase(path);
+  const reloadedRepository = new SqliteStorageRepository(reloaded.database);
+  const persisted = await reloadedRepository.getLessonProgress(item.id);
+  assert.equal(persisted?.progress.learningItems[item.vocabulary[0].id]?.status, "learned");
+  assert.equal(persisted?.progress.quizItems[item.quiz[0].id]?.completed, true);
+  assert.equal(inspectBackupCapacity(reloaded.database, "0.1.0").state, "too_large");
+  reloaded.database.close();
+});
+test("record-level source limits reject the local field rather than global backup capacity", async () => {
+  const database = new DatabaseSync(":memory:");
+  runMigrations(database);
+  const repository = new SqliteStorageRepository(database);
+  const item = lesson();
+  await repository.createLesson({ id: item.id, lesson: item });
+  await assert.rejects(
+    () =>
+      repository.updateLesson(item.id, {
+        source: { originalTranscript: "é".repeat(2_000_001) },
+      }),
+    (error) =>
+      error instanceof StorageError &&
+      error.code === "VALIDATION_ERROR" &&
+      error.message.includes("originalTranscript") &&
+      !error.message.includes(String(MAX_BACKUP_BYTES)),
+  );
   database.close();
 });
 test("transactional progress commands survive sequential cross-feature updates and reload", async () => {
@@ -2137,7 +2178,61 @@ test("backup byte and lesson count limits enforce minus-one, exact and plus-one 
   );
   database.close();
 });
-test("Merge rolls back when individually valid databases would exceed backup capacity together", async () => {
+test("export accepts an actual artifact at the byte limit and rejects one byte over", async () => {
+  const database = new DatabaseSync(":memory:");
+  runMigrations(database);
+  const repository = new SqliteStorageRepository(database);
+  const first = { ...lesson(), id: uuid(780), title: "Exact byte boundary one" };
+  const second = { ...lesson(), id: uuid(781), title: "Exact byte boundary two" };
+  await repository.createLesson({ id: first.id, lesson: first });
+  await repository.createLesson({ id: second.id, lesson: second });
+
+  const lengths = [1_950_000, 1_950_000, 1_950_000, 1_950_000];
+  const writeTranscripts = () => {
+    database
+      .prepare("UPDATE lessons SET original_transcript=?,processed_transcript=? WHERE id=?")
+      .run("x".repeat(lengths[0]), "x".repeat(lengths[1]), first.id);
+    database
+      .prepare("UPDATE lessons SET original_transcript=?,processed_transcript=? WHERE id=?")
+      .run("x".repeat(lengths[2]), "x".repeat(lengths[3]), second.id);
+  };
+  writeTranscripts();
+  const initialBytes = inspectBackupCapacity(database, "0.1.0").estimatedBytes!;
+  let remaining = MAX_BACKUP_BYTES - initialBytes;
+  assert.ok(remaining > 0);
+  for (let index = 0; index < lengths.length && remaining > 0; index++) {
+    const added = Math.min(2_000_000 - lengths[index], remaining);
+    lengths[index] += added;
+    remaining -= added;
+  }
+  assert.equal(remaining, 0);
+  writeTranscripts();
+  assert.equal(inspectBackupCapacity(database, "0.1.0").estimatedBytes, MAX_BACKUP_BYTES);
+  const exactBackup = exportBackup(database, "0.1.0");
+  const exactTarget = new DatabaseSync(":memory:");
+  runMigrations(exactTarget);
+  assert.doesNotThrow(() => importBackup(exactTarget, exactBackup, "replace"));
+  assert.equal(
+    (exactTarget.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    2,
+  );
+  exactTarget.close();
+
+  const expandable = lengths.findIndex((length) => length < 2_000_000);
+  assert.notEqual(expandable, -1);
+  lengths[expandable] += 1;
+  writeTranscripts();
+  assert.equal(inspectBackupCapacity(database, "0.1.0").estimatedBytes, MAX_BACKUP_BYTES + 1);
+  assert.throws(() => exportBackup(database, "0.1.0"), /vượt quá giới hạn/);
+
+  lengths[expandable] -= 2;
+  writeTranscripts();
+  assert.equal(inspectBackupCapacity(database, "0.1.0").estimatedBytes, MAX_BACKUP_BYTES - 1);
+  assert.doesNotThrow(() => exportBackup(database, "0.1.0"));
+  database.close();
+});
+
+test("Merge may create an oversized database while the incoming artifact remains bounded", async () => {
   const source = new DatabaseSync(":memory:");
   const target = new DatabaseSync(":memory:");
   runMigrations(source);
@@ -2167,26 +2262,35 @@ test("Merge rolls back when individually valid databases would exceed backup cap
   });
   const backup = exportBackup(source, "0.1.0");
 
-  assert.throws(
-    () => importBackup(target, backup, "merge"),
-    (error) =>
-      error instanceof StorageError &&
-      error.code === "VALIDATION_ERROR" &&
-      error.message.includes(String(MAX_BACKUP_BYTES)),
-  );
+  assert.doesNotThrow(() => importBackup(target, backup, "merge"));
   assert.equal(
     (
       target.prepare("SELECT COUNT(*) count FROM lessons").get() as {
         count: number;
       }
     ).count,
-    1,
+    2,
   );
   assert.equal(
     (await targetRepository.getLesson(targetLesson.id))?.lesson.title,
     targetLesson.title,
   );
-  assert.doesNotThrow(() => exportBackup(target, "0.1.0"));
+  assert.equal(
+    (await targetRepository.getLesson(sourceLesson.id))?.lesson.title,
+    sourceLesson.title,
+  );
+  assert.equal(inspectBackupCapacity(target, "0.1.0").state, "too_large");
+  assert.throws(() => exportBackup(target, "0.1.0"), /vượt quá giới hạn/);
+  await targetRepository.updateLessonProgress(targetLesson.id, {
+    type: "mark_learning_item_reviewed",
+    itemId: targetLesson.vocabulary[0].id,
+  });
+  assert.equal(
+    (await targetRepository.getLessonProgress(targetLesson.id))?.progress.learningItems[
+      targetLesson.vocabulary[0].id
+    ]?.status,
+    "learned",
+  );
   source.close();
   target.close();
 });

@@ -53,6 +53,8 @@ soft delete.
 Backup version 2 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson, source/transcript,
 progress, Speaking, Listening và Re-listen bookmarks. Backup v1 cũ vẫn import được với cảnh báo
 source rỗng. Backup không gồm audio cache, API key, environment, machine path hay metadata nhạy cảm.
+Giới hạn 8.000.000 byte chỉ áp dụng cho một file backup JSON, không phải dung lượng SQLite: nếu backup
+quá lớn, tiến độ học vẫn được lưu và khu vực Backup sẽ hiển thị dung lượng/chặn riêng thao tác export.
 Xem [backup and restore](docs/backup-and-restore.md).
 
 Kokoro chạy local tại `127.0.0.1:5050`; app lưu WAV và metadata trong audio cache. Server queue và

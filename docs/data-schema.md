@@ -72,6 +72,12 @@ Parser progress mặc định ba collection trên thành `{}`, `[]`, `[]` khi do
 Command validation kiểm tra item thuộc lesson, enum, timestamp, UUID, feedback shape và giới hạn
 string. SQLite repository áp dụng command bằng read-modify-write transaction.
 
+Routine Progress transactions validate this document and its lesson bindings but do not measure a
+full backup. Backup v2's 8,000,000-byte ceiling is an export/import artifact boundary, independent
+from SQLite capacity. Source transcripts remain limited per field to 2,000,000 characters and
+4,000,000 UTF-8 bytes; lesson/progress JSON, Listening notes, Speaking drafts, and sentence checks
+retain their own bounded validators.
+
 # Immersion Listening Loop tables
 
 Schemas v8-v10 introduced Listening, Re-listen bookmarks, and typed audio failures. Lesson and

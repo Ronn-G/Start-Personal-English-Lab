@@ -15,7 +15,6 @@ import {
   type SentenceCheckResult,
 } from "../../lib/sentence-check";
 import type { Lesson } from "../../types/lesson";
-import { assertBackupCapacity } from "../backup/backup";
 import { MAX_STORED_SPEAKING_SESSIONS } from "../storage/domain";
 import { StorageError } from "../storage/errors";
 
@@ -734,7 +733,7 @@ export class SpeakingService {
     if (Number(row.count) >= MAX_STORED_SPEAKING_SESSIONS) {
       throw new StorageError(
         "VALIDATION_ERROR",
-        `Đã đạt giới hạn ${MAX_STORED_SPEAKING_SESSIONS} phiên nói có thể sao lưu.`,
+        `Đã đạt giới hạn ${MAX_STORED_SPEAKING_SESSIONS} phiên luyện nói.`,
       );
     }
   }
@@ -747,7 +746,6 @@ export class SpeakingService {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const result = operation();
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
       return result;
     } catch (error) {

@@ -387,6 +387,47 @@ test("draft binding and versions prevent cross-item and stale overwrites", () =>
   }
 });
 
+test("speaking drafts persist when export is oversized and keep their own field limit", () => {
+  const { database, lesson, service } = fixture();
+  try {
+    let state = call(service, { action: "start", lessonId: lesson.id });
+    state = toFinalStep(service, state);
+    database
+      .prepare("UPDATE lessons SET original_transcript=?,processed_transcript=? WHERE id=?")
+      .run("é".repeat(2_000_000), "é".repeat(2_000_000), lesson.id);
+    assert.throws(() => exportBackup(database, "0.1.0"), /vượt quá giới hạn/);
+
+    const saved = call(service, {
+      action: "save_draft",
+      ...bind(state),
+      draft: "A short draft still persists.",
+      clientDraftVersion: 1,
+    });
+    const reloaded = call(new SpeakingService(database), {
+      action: "status",
+      lessonId: lesson.id,
+    });
+    const itemId = saved.tasks[saved.session!.currentItemIndex].id;
+    assert.equal(reloaded.session!.drafts[itemId], "A short draft still persists.");
+    assert.throws(
+      () =>
+        call(service, {
+          action: "save_draft",
+          ...bind(saved),
+          draft: "x".repeat(501),
+          clientDraftVersion: 2,
+        }),
+      (error) =>
+        error instanceof StorageError &&
+        error.code === "VALIDATION_ERROR" &&
+        error.message.includes("500") &&
+        !error.message.includes("backup"),
+    );
+  } finally {
+    database.close();
+  }
+});
+
 test("sentence checks reject changed state and keep the newest per-item response", () => {
   const { database, lesson, service } = fixture();
   try {

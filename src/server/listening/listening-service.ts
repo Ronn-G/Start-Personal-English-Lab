@@ -13,7 +13,6 @@ import {
   type ListeningStep,
 } from "../../lib/listening-practice";
 import type { Lesson } from "../../types/lesson";
-import { assertBackupCapacity } from "../backup/backup";
 import { StorageError } from "../storage/errors";
 import { MAX_STORED_LISTENING_SESSIONS } from "../storage/domain";
 
@@ -372,7 +371,7 @@ export class ListeningService {
         if (Number(sessionCount.count) >= MAX_STORED_LISTENING_SESSIONS)
           throw new StorageError(
             "VALIDATION_ERROR",
-            `Đã đạt giới hạn ${MAX_STORED_LISTENING_SESSIONS} phiên nghe có thể sao lưu.`,
+            `Đã đạt giới hạn ${MAX_STORED_LISTENING_SESSIONS} phiên luyện nghe.`,
           );
         if (active) {
           this.database
@@ -402,7 +401,6 @@ export class ListeningService {
             now,
           );
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -446,7 +444,7 @@ export class ListeningService {
     const firstNote = optionalNote(note);
     assertListeningTransition(row.current_step, "check_meaning");
     const now = new Date().toISOString();
-    this.writeWithinBackupCapacity(() => {
+    this.writeTransaction(() => {
       const result = this.database
         .prepare(
           `UPDATE listening_sessions
@@ -477,7 +475,7 @@ export class ListeningService {
       throw new StorageError("CONFLICT", "Không thể bỏ qua bước luyện nghe.");
     }
     const now = new Date().toISOString();
-    this.writeWithinBackupCapacity(() => {
+    this.writeTransaction(() => {
       const result = this.database
         .prepare(
           "UPDATE listening_sessions SET current_step=?,updated_at=? WHERE id=? AND lesson_id=? AND status='active' AND current_step=?",
@@ -499,7 +497,7 @@ export class ListeningService {
     }
     assertListeningTransition(row.current_step, "sentence_review");
     const now = new Date().toISOString();
-    this.writeWithinBackupCapacity(() => {
+    this.writeTransaction(() => {
       const result = this.database
         .prepare(
           `UPDATE listening_sessions
@@ -557,7 +555,6 @@ export class ListeningService {
           loopDelta: 0,
         });
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -603,7 +600,6 @@ export class ListeningService {
           });
         }
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -632,7 +628,7 @@ export class ListeningService {
     const item = this.listeningItem(session, itemId);
     const now = new Date().toISOString();
     if (this.sourceStillExists(lesson, item)) {
-      this.writeWithinBackupCapacity(() => {
+      this.writeTransaction(() => {
         this.upsertItem(item, now, {
           listenDelta,
           loopDelta,
@@ -683,7 +679,6 @@ export class ListeningService {
             updated_at=excluded.updated_at`,
         )
         .run(item.id, item.lessonId, item.sourceType, item.sourceItemId, saved ? 1 : 0, now);
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -751,7 +746,6 @@ export class ListeningService {
       if (Number(result.changes) !== 1) {
         throw new StorageError("CONFLICT", "Không thể hoàn thành phiên luyện nghe.");
       }
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -770,11 +764,10 @@ export class ListeningService {
     return this.response(lesson, row);
   }
 
-  private writeWithinBackupCapacity(operation: () => void) {
+  private writeTransaction(operation: () => void) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       operation();
-      assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");

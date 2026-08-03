@@ -46,6 +46,14 @@ export const MAX_SPEAKING_SESSION_COUNT = MAX_STORED_SPEAKING_SESSIONS;
 export const MAX_LISTENING_SESSION_COUNT = MAX_STORED_LISTENING_SESSIONS;
 export const MAX_LISTENING_PROGRESS_COUNT = 25_000;
 
+export interface BackupCapacityStatus {
+  state: "ready" | "too_large" | "unavailable";
+  estimatedBytes: number | null;
+  maximumBytes: number;
+  exportAvailable: boolean;
+  reason?: string;
+}
+
 const MAX_SOURCE_LABEL_CHARS = 500;
 const MAX_SOURCE_URL_CHARS = 2_048;
 const MAX_SOURCE_TRANSCRIPT_CHARS = 2_000_000;
@@ -380,7 +388,10 @@ function bare(document: BackupDocument): BareBackup {
   return result;
 }
 
-export function validateBackup(value: unknown): {
+export function validateBackup(
+  value: unknown,
+  options: { enforceArtifactByteLimit?: boolean } = {},
+): {
   document?: BackupDocument;
   diagnostics: BackupDiagnostic[];
 } {
@@ -405,7 +416,7 @@ export function validateBackup(value: unknown): {
       message: "Backup không thể chuyển thành JSON hợp lệ.",
     });
   }
-  if (!isBackupByteLengthAllowed(serializedBytes))
+  if ((options.enforceArtifactByteLimit ?? true) && !isBackupByteLengthAllowed(serializedBytes))
     d.push({
       code: "BACKUP_TOO_LARGE",
       path: "$",
@@ -1263,6 +1274,7 @@ function createBackupDocument(
   appVersion: string,
   now = new Date().toISOString(),
   insideWriteTransaction = false,
+  enforceArtifactByteLimit = true,
 ): BackupDocument {
   if (!insideWriteTransaction) database.exec("BEGIN");
   try {
@@ -1430,13 +1442,17 @@ function createBackupDocument(
       ...payload,
       integrity: { algorithm: "SHA-256", checksum: checksum(payload) },
     };
-    const validated = validateBackup(document);
+    const validated = validateBackup(document, { enforceArtifactByteLimit: false });
     if (!validated.document)
       throw new Error(
         `Dữ liệu SQLite không hợp lệ: ${validated.diagnostics.map((x) => x.message).join("; ")}`,
       );
-    if (!isBackupByteLengthAllowed(serializedUtf8Bytes(document)))
-      throw new Error(`Backup vượt quá giới hạn ${MAX_BACKUP_BYTES} byte.`);
+    if (enforceArtifactByteLimit && !isBackupByteLengthAllowed(serializedUtf8Bytes(document))) {
+      throw new StorageError(
+        "VALIDATION_ERROR",
+        `Bản sao lưu hiện tại vượt quá giới hạn ${MAX_BACKUP_BYTES} byte. Dữ liệu học vẫn được lưu bình thường.`,
+      );
+    }
     if (!insideWriteTransaction) database.exec("COMMIT");
     return document;
   } catch (error) {
@@ -1445,15 +1461,41 @@ function createBackupDocument(
   }
 }
 
-export function assertBackupCapacity(database: DatabaseSync): void {
+export function inspectBackupCapacity(
+  database: DatabaseSync,
+  appVersion: string,
+  now = new Date().toISOString(),
+): BackupCapacityStatus {
   try {
-    createBackupDocument(database, "capacity-check", new Date().toISOString(), true);
+    const document = createBackupDocument(database, appVersion, now, false, false);
+    const estimatedBytes = serializedUtf8Bytes(document);
+    if (!isBackupByteLengthAllowed(estimatedBytes)) {
+      return {
+        state: "too_large",
+        estimatedBytes,
+        maximumBytes: MAX_BACKUP_BYTES,
+        exportAvailable: false,
+        reason:
+          "Dữ liệu hiện tại vẫn được lưu bình thường, nhưng đã vượt kích thước tối đa của một tệp sao lưu.",
+      };
+    }
+    return {
+      state: "ready",
+      estimatedBytes,
+      maximumBytes: MAX_BACKUP_BYTES,
+      exportAvailable: true,
+    };
   } catch (error) {
-    throw new StorageError(
-      "VALIDATION_ERROR",
-      `Thay đổi sẽ vượt giới hạn backup ${MAX_BACKUP_BYTES} byte hoặc tạo dữ liệu không thể sao lưu.`,
-      { cause: error },
-    );
+    return {
+      state: "unavailable",
+      estimatedBytes: null,
+      maximumBytes: MAX_BACKUP_BYTES,
+      exportAvailable: false,
+      reason:
+        error instanceof Error
+          ? `Không thể kiểm tra bản sao lưu: ${error.message}`
+          : "Không thể kiểm tra bản sao lưu hiện tại.",
+    };
   }
 }
 
@@ -2551,7 +2593,6 @@ export function importBackup(
     }
     const foreignKeyError = database.prepare("PRAGMA foreign_key_check").get();
     if (foreignKeyError) throw new Error("Verify foreign key sau import thất bại.");
-    assertBackupCapacity(database);
     const importId = randomUUID();
     database
       .prepare("INSERT INTO import_receipts VALUES(?,?,?,?,?,?,?,?)")
