@@ -83,7 +83,10 @@ import {
   personalizationScore,
 } from "../src/lib/speaking-practice";
 import { mergeSpeakingProgress } from "../src/server/backup/backup";
-import { extractListeningItems } from "../src/lib/listening-practice";
+import {
+  createListeningSessionSnapshot,
+  extractListeningItems,
+} from "../src/lib/listening-practice";
 import {
   isSentenceFeedbackStale,
   parseSentenceCheck,
@@ -114,7 +117,11 @@ function legacyLesson(): Record<string, unknown> {
       vietnamese: "tá»«",
     })),
     idiomsAndSlang: [
-      { phrase: "break the ice", meaning: "báº¯t chuyá»‡n", vietnamese: "phÃ¡ tan im láº·ng" },
+      {
+        phrase: "break the ice",
+        meaning: "báº¯t chuyá»‡n",
+        vietnamese: "phÃ¡ tan im láº·ng",
+      },
     ],
     exampleSentences: Array.from({ length: 5 }, (_, i) => ({
       sentence: `Sentence ${i}`,
@@ -142,8 +149,14 @@ function legacyLesson(): Record<string, unknown> {
         whyUseful: "useful",
         remixPrompt: "remix",
       })),
-      reviewPlan: [1, 2, 4, 7].map((day) => ({ day: `Day ${day}`, task: "review" })),
-      ankiCards: Array.from({ length: 5 }, (_, i) => ({ front: `Front ${i}`, back: "Back" })),
+      reviewPlan: [1, 2, 4, 7].map((day) => ({
+        day: `Day ${day}`,
+        task: "review",
+      })),
+      ankiCards: Array.from({ length: 5 }, (_, i) => ({
+        front: `Front ${i}`,
+        back: "Back",
+      })),
     },
   };
 }
@@ -177,7 +190,10 @@ function resignBackup<T extends { integrity: { algorithm: "SHA-256"; checksum: s
 ): T {
   const payload = structuredClone(document) as Record<string, unknown>;
   delete payload.integrity;
-  document.integrity = { algorithm: "SHA-256", checksum: checksum(payload as never) };
+  document.integrity = {
+    algorithm: "SHA-256",
+    checksum: checksum(payload as never),
+  };
   return document;
 }
 
@@ -337,7 +353,10 @@ test("database migrates 1 through 4 without losing legacy content and rejects ne
   const db = new DatabaseSync(":memory:");
   runMigrations(db, [MIGRATIONS[0]]);
   const id = uuid(4);
-  const legacy = JSON.stringify({ ...legacyLesson(), unknownLegacyField: "kept" });
+  const legacy = JSON.stringify({
+    ...legacyLesson(),
+    unknownLegacyField: "kept",
+  });
   db.prepare(
     "INSERT INTO lessons(id,schema_version,title,summary,lesson_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
   ).run(id, 1, "title", "summary", legacy, "2026-01-01", "2026-01-01");
@@ -346,8 +365,11 @@ test("database migrates 1 through 4 without losing legacy content and rejects ne
   ).run(id, 1, JSON.stringify({ answeredQuestions: [0, 99] }), "2026-01-01", "2026-01-01");
   assert.equal(runMigrations(db), CURRENT_DATABASE_VERSION);
   const migrated = JSON.parse(
-    (db.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as { lesson_json: string })
-      .lesson_json,
+    (
+      db.prepare("SELECT lesson_json FROM lessons WHERE id=?").get(id) as {
+        lesson_json: string;
+      }
+    ).lesson_json,
   );
   assert.equal(migrated.title, "BÃ i kiá»ƒm thá»­");
   assert.equal(migrated.unknownLegacyField, "kept");
@@ -393,7 +415,10 @@ test("repository rejects an update that would make the database too large to bac
   await repository.createLesson({
     id: item.id,
     lesson: item,
-    source: { originalTranscript: "original", processedTranscript: "processed" },
+    source: {
+      originalTranscript: "original",
+      processedTranscript: "processed",
+    },
   });
 
   const maximumUtf8Transcript = "é".repeat(2_000_000);
@@ -525,9 +550,13 @@ test("dry-run writes nothing; commit verifies progress; retry is idempotent", ()
       progress: { answeredQuestions: [0, 0, 3, 99] },
     },
   ];
-  const before = db.prepare("SELECT total_changes() AS count").get() as { count: number };
+  const before = db.prepare("SELECT total_changes() AS count").get() as {
+    count: number;
+  };
   const preview = previewLegacyMigration(db, records);
-  const after = db.prepare("SELECT total_changes() AS count").get() as { count: number };
+  const after = db.prepare("SELECT total_changes() AS count").get() as {
+    count: number;
+  };
   assert.equal(before.count, after.count);
   assert.equal(preview.validLessons, 1);
   assert.equal(preview.convertedProgress, 1);
@@ -536,17 +565,26 @@ test("dry-run writes nothing; commit verifies progress; retry is idempotent", ()
   assert.equal(
     validateLessonProgress(
       JSON.parse(
-        (db.prepare("SELECT progress_json FROM lesson_progress").get() as { progress_json: string })
-          .progress_json,
+        (
+          db.prepare("SELECT progress_json FROM lesson_progress").get() as {
+            progress_json: string;
+          }
+        ).progress_json,
       ),
     ).success,
     true,
   );
-  const count1 = (db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as { count: number })
-    .count;
+  const count1 = (
+    db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as {
+      count: number;
+    }
+  ).count;
   const second = commitLegacyMigration(db, records);
-  const count2 = (db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as { count: number })
-    .count;
+  const count2 = (
+    db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as {
+      count: number;
+    }
+  ).count;
   assert.equal(count1, count2);
   assert.equal(second.preview.existingLessons, 1);
   assert.ok(["completed", "completed-with-warnings"].includes(getLegacyMigrationStatus(db).status));
@@ -564,7 +602,11 @@ test("partial invalid batch keeps valid lesson and reports warning", () => {
   assert.equal(result.preview.invalidLessons, 1);
   assert.equal(result.status.status, "completed-with-warnings");
   assert.equal(
-    (db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as { count: number }).count,
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   db.close();
@@ -583,7 +625,11 @@ test("existing SQLite fingerprint reuses stored quiz UUIDs for migrated progress
   const stored = await repo.getLessonProgress(existing.id);
   assert.ok(stored?.progress.quizItems[existing.quiz[1].id]);
   assert.equal(
-    (db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as { count: number }).count,
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   db.close();
@@ -597,7 +643,11 @@ test("critical commit failure rolls back lessons/receipts and records failed sta
   );
   assert.throws(() => commitLegacyMigration(db, [{ lesson: legacyLesson() }]));
   assert.equal(
-    (db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as { count: number }).count,
+    (
+      db.prepare("SELECT COUNT(*) AS count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     0,
   );
   assert.equal(
@@ -710,12 +760,20 @@ test("backup dry-run is read-only; merge retry is idempotent; replace rolls back
   );
   importBackup(target, backup, "merge");
   assert.equal(
-    (target.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    (
+      target.prepare("SELECT COUNT(*) count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   importBackup(target, backup, "merge", true);
   assert.equal(
-    (target.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    (
+      target.prepare("SELECT COUNT(*) count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   target.exec(
@@ -723,7 +781,11 @@ test("backup dry-run is read-only; merge retry is idempotent; replace rolls back
   );
   assert.throws(() => importBackup(target, backup, "replace", true));
   assert.equal(
-    (target.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    (
+      target.prepare("SELECT COUNT(*) count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   source.close();
@@ -845,7 +907,12 @@ test("audio queue coalesces duplicates and runs concurrency one", async () => {
   };
   const a = queue.enqueue({ key: "same", request, priority: 5, lessonId: "l" });
   const b = queue.enqueue({ key: "same", request, priority: 0, lessonId: "l" });
-  const c = queue.enqueue({ key: "other", request, priority: 2, lessonId: "l" });
+  const c = queue.enqueue({
+    key: "other",
+    request,
+    priority: 2,
+    lessonId: "l",
+  });
   assert.deepEqual(await Promise.all([a, b, c]), ["ok", "ok", "ok"]);
   assert.equal(calls, 2);
   assert.equal(max, 1);
@@ -860,8 +927,18 @@ test("audio queue keeps a shared request alive for another lesson consumer", asy
     await gate;
     return "ready";
   };
-  const first = queue.enqueue({ key: "shared", request, priority: 3, lessonId: "lesson-a" });
-  const second = queue.enqueue({ key: "shared", request, priority: 3, lessonId: "lesson-b" });
+  const first = queue.enqueue({
+    key: "shared",
+    request,
+    priority: 3,
+    lessonId: "lesson-a",
+  });
+  const second = queue.enqueue({
+    key: "shared",
+    request,
+    priority: 3,
+    lessonId: "lesson-b",
+  });
   queue.cancelLesson("lesson-a");
   release();
   assert.deepEqual(await Promise.all([first, second]), ["ready", "ready"]);
@@ -909,7 +986,12 @@ test("audio server synthesis queue continues after a provider failure", async ()
     status: "ready",
   }));
   assert.equal(recovered.status, "ready");
-  assert.deepEqual(queue.info(), { concurrency: 1, active: 0, queued: 0, maxQueued: 24 });
+  assert.deepEqual(queue.info(), {
+    concurrency: 1,
+    active: 0,
+    queued: 0,
+    maxQueued: 24,
+  });
 });
 test("audio preparation only permits fallback after a real failure", async () => {
   for (const status of ["queued", "generating", "ready", "cancelled"] as const) {
@@ -1072,7 +1154,9 @@ test("audio cache validates WAV files and repairs only invalid ready entries", a
     database: db,
     root,
     fetcher: (async () =>
-      new Response(wav, { headers: { "content-type": "audio/wav" } })) as typeof fetch,
+      new Response(wav, {
+        headers: { "content-type": "audio/wav" },
+      })) as typeof fetch,
   });
   const result = await service.prepare("Validate this file.");
   writeFileSync(join(root, `${result.cacheKey}.wav`), Buffer.from("broken"));
@@ -1103,7 +1187,11 @@ test("audio cache reports an invalid WAV separately from provider HTTP failure",
     (error: unknown) => error instanceof AudioServiceError && error.code === "KOKORO_INVALID_WAV",
   );
   assert.equal(
-    (db.prepare("SELECT error_code FROM audio_cache").get() as { error_code: string }).error_code,
+    (
+      db.prepare("SELECT error_code FROM audio_cache").get() as {
+        error_code: string;
+      }
+    ).error_code,
     "KOKORO_INVALID_WAV",
   );
   db.close();
@@ -1114,7 +1202,11 @@ test("audio health response is bounded to safe provider state", async () => {
   const ready = await new AudioCacheService({
     database: db,
     fetcher: (async () =>
-      Response.json({ status: "ok", modelLoaded: true, modelPath: "private" })) as typeof fetch,
+      Response.json({
+        status: "ok",
+        modelLoaded: true,
+        modelPath: "private",
+      })) as typeof fetch,
   }).health();
   assert.equal(ready.configured, true);
   assert.equal(ready.reachable, true);
@@ -1134,9 +1226,24 @@ test("audio health response is bounded to safe provider state", async () => {
 });
 test("audio cleanup plan is LRU and protects current/generating files", () => {
   const rows = [
-    { cache_key: "old", size_bytes: 60, last_accessed_at: "2020", status: "ready" },
-    { cache_key: "new", size_bytes: 60, last_accessed_at: "2022", status: "ready" },
-    { cache_key: "busy", size_bytes: 60, last_accessed_at: "2019", status: "generating" },
+    {
+      cache_key: "old",
+      size_bytes: 60,
+      last_accessed_at: "2020",
+      status: "ready",
+    },
+    {
+      cache_key: "new",
+      size_bytes: 60,
+      last_accessed_at: "2022",
+      status: "ready",
+    },
+    {
+      cache_key: "busy",
+      size_bytes: 60,
+      last_accessed_at: "2019",
+      status: "generating",
+    },
   ];
   assert.deepEqual(cleanupPlan(rows, 120, "new"), ["old"]);
 });
@@ -1359,7 +1466,9 @@ test("backup rejects poisoned speaking progress and sessions with precise paths"
       name: "malformed check",
       path: `$.speakingSessions[0].checks.${task.id}`,
       mutate(document) {
-        document.speakingSessions![0].checks = { [task.id]: { inputHash: "short" } };
+        document.speakingSessions![0].checks = {
+          [task.id]: { inputHash: "short" },
+        };
       },
     },
   ];
@@ -1570,8 +1679,11 @@ test("backup round trip preserves speaking progress and active session", () => {
   runMigrations(target);
   importBackup(target, backup, "replace");
   assert.equal(
-    (target.prepare("SELECT self_rating FROM speaking_progress").get() as { self_rating: string })
-      .self_rating,
+    (
+      target.prepare("SELECT self_rating FROM speaking_progress").get() as {
+        self_rating: string;
+      }
+    ).self_rating,
     "hard",
   );
   assert.equal(
@@ -1658,14 +1770,28 @@ test("backup v2 Replace restores full lesson source, progress, speaking, listeni
       item.updatedAt,
     );
   const listeningItem = extractListeningItems(item)[0];
+  const listeningSnapshot = createListeningSessionSnapshot(item);
   source
     .prepare(
       `INSERT INTO listening_sessions(
          id,lesson_id,status,current_step,first_listen_comprehension,first_listen_note,
-         final_note,revealed_item_ids_json,started_at,updated_at
-       ) VALUES(?,?,'active','check_meaning','some_parts','Main idea','',?,?,?)`,
+         final_note,revealed_item_ids_json,selected_item_ids_json,selected_items_json,
+         listening_track,track_hash,lesson_content_hash,selection_version,started_at,updated_at
+       ) VALUES(?,?,'active','check_meaning','some_parts','Main idea','',?,?,?,?,?,?,?,?,?)`,
     )
-    .run(uuid(41), item.id, JSON.stringify([listeningItem.id]), item.createdAt, item.updatedAt);
+    .run(
+      uuid(41),
+      item.id,
+      JSON.stringify([listeningItem.id]),
+      JSON.stringify(listeningSnapshot.selectedItemIds),
+      JSON.stringify(listeningSnapshot.selectedItems),
+      listeningSnapshot.track,
+      listeningSnapshot.trackHash,
+      listeningSnapshot.lessonContentHash,
+      listeningSnapshot.selectionVersion,
+      item.createdAt,
+      item.updatedAt,
+    );
   source
     .prepare(
       `INSERT INTO listening_item_progress(
@@ -1718,7 +1844,11 @@ test("backup v2 Replace restores full lesson source, progress, speaking, listeni
     lessonProgress,
   );
   assert.equal(
-    (target.prepare("SELECT status FROM speaking_progress").get() as { status: string }).status,
+    (
+      target.prepare("SELECT status FROM speaking_progress").get() as {
+        status: string;
+      }
+    ).status,
     "personalized",
   );
   assert.equal(
@@ -1734,8 +1864,11 @@ test("backup v2 Replace restores full lesson source, progress, speaking, listeni
     1,
   );
   assert.equal(
-    (target.prepare("SELECT COUNT(*) count FROM listening_sessions").get() as { count: number })
-      .count,
+    (
+      target.prepare("SELECT COUNT(*) count FROM listening_sessions").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   source.close();
@@ -1788,7 +1921,10 @@ test("backup merge conflict remaps source, speaking and listening idempotently",
 
   const target = new DatabaseSync(":memory:");
   runMigrations(target);
-  const conflicting = { ...structuredClone(first), summary: "Destination content differs." };
+  const conflicting = {
+    ...structuredClone(first),
+    summary: "Destination content differs.",
+  };
   target
     .prepare(
       "INSERT INTO lessons(id,schema_version,title,summary,lesson_json,created_at,updated_at,was_truncated) VALUES(?,?,?,?,?,?,?,0)",
@@ -1821,18 +1957,27 @@ test("backup merge conflict remaps source, speaking and listening idempotently",
   assert.equal(sourceRow.processed_transcript, "Imported processed transcript");
   assert.equal(sourceRow.source_url, "https://example.com/imported-source");
   assert.equal(
-    (target.prepare("SELECT lesson_id FROM speaking_progress").get() as { lesson_id: string })
-      .lesson_id,
+    (
+      target.prepare("SELECT lesson_id FROM speaking_progress").get() as {
+        lesson_id: string;
+      }
+    ).lesson_id,
     importedRow.id,
   );
   assert.equal(
-    (target.prepare("SELECT lesson_id FROM speaking_sessions").get() as { lesson_id: string })
-      .lesson_id,
+    (
+      target.prepare("SELECT lesson_id FROM speaking_sessions").get() as {
+        lesson_id: string;
+      }
+    ).lesson_id,
     importedRow.id,
   );
   assert.equal(
-    (target.prepare("SELECT lesson_id FROM listening_sessions").get() as { lesson_id: string })
-      .lesson_id,
+    (
+      target.prepare("SELECT lesson_id FROM listening_sessions").get() as {
+        lesson_id: string;
+      }
+    ).lesson_id,
     importedRow.id,
   );
   assert.equal(
@@ -1978,7 +2123,11 @@ test("backup byte and lesson count limits enforce minus-one, exact and plus-one 
   const atLimit = { ...template, id: uuid(700) };
   await repository.createLesson({ id: atLimit.id, lesson: atLimit });
   assert.equal(
-    (database.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    (
+      database.prepare("SELECT COUNT(*) count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     MAX_LESSON_COUNT,
   );
   const overLimit = { ...template, id: uuid(701) };
@@ -1996,8 +2145,16 @@ test("Merge rolls back when individually valid databases would exceed backup cap
   const sourceRepository = new SqliteStorageRepository(source);
   const targetRepository = new SqliteStorageRepository(target);
   const transcript = "é".repeat(1_999_500);
-  const sourceLesson = { ...lesson(), id: uuid(801), title: "Incoming capacity lesson" };
-  const targetLesson = { ...lesson(), id: uuid(802), title: "Existing capacity lesson" };
+  const sourceLesson = {
+    ...lesson(),
+    id: uuid(801),
+    title: "Incoming capacity lesson",
+  };
+  const targetLesson = {
+    ...lesson(),
+    id: uuid(802),
+    title: "Existing capacity lesson",
+  };
   await sourceRepository.createLesson({
     id: sourceLesson.id,
     lesson: sourceLesson,
@@ -2018,7 +2175,11 @@ test("Merge rolls back when individually valid databases would exceed backup cap
       error.message.includes(String(MAX_BACKUP_BYTES)),
   );
   assert.equal(
-    (target.prepare("SELECT COUNT(*) count FROM lessons").get() as { count: number }).count,
+    (
+      target.prepare("SELECT COUNT(*) count FROM lessons").get() as {
+        count: number;
+      }
+    ).count,
     1,
   );
   assert.equal(
@@ -2051,7 +2212,10 @@ test("backup UI shows version, source availability, per-type counts and clear Re
 test("personalization selection prefers reusable personal sentences", () => {
   const candidates = extractPracticeCandidates(speakingLesson());
   const useful = candidates.find((x) => x.text.includes("every day"))!,
-    abstract = { ...useful, text: "The catch-22 intensifies self-loathing through abstraction." };
+    abstract = {
+      ...useful,
+      text: "The catch-22 intensifies self-loathing through abstraction.",
+    };
   assert.ok(personalizationScore(useful) > personalizationScore(abstract));
   const session = buildSpeakingSession(speakingLesson());
   assert.ok(
@@ -2078,7 +2242,11 @@ test("speaking UI exposes actionable Personalize and rating guidance without aut
 test("short personalization rules and fallback are useful", () => {
   const base = extractPracticeCandidates(speakingLesson())[0];
   assert.equal(
-    personalizationPattern({ ...base, text: "Be honest with yourself.", targetPhrase: undefined }),
+    personalizationPattern({
+      ...base,
+      text: "Be honest with yourself.",
+      targetPhrase: undefined,
+    }),
     "I need to be honest with myself about ______.",
   );
   assert.equal(
@@ -2275,17 +2443,24 @@ test("speaking compatibility migration repairs an intermediate v6 database", () 
   );
   MIGRATIONS.find((x) => x.version === 7)!.up(db);
   const progressColumns = (
-      db.prepare("PRAGMA table_info(speaking_progress)").all() as Array<{ name: string }>
+      db.prepare("PRAGMA table_info(speaking_progress)").all() as Array<{
+        name: string;
+      }>
     ).map((x) => x.name),
     sessionColumns = (
-      db.prepare("PRAGMA table_info(speaking_sessions)").all() as Array<{ name: string }>
+      db.prepare("PRAGMA table_info(speaking_sessions)").all() as Array<{
+        name: string;
+      }>
     ).map((x) => x.name);
   assert.ok(progressColumns.includes("source_item_id"));
   assert.ok(sessionColumns.includes("drafts_json"));
   assert.ok(sessionColumns.includes("checks_json"));
   assert.equal(
-    (db.prepare("SELECT source_item_id FROM speaking_progress").get() as { source_item_id: string })
-      .source_item_id,
+    (
+      db.prepare("SELECT source_item_id FROM speaking_progress").get() as {
+        source_item_id: string;
+      }
+    ).source_item_id,
     "item",
   );
   db.close();
@@ -2306,7 +2481,11 @@ test("keyword chunks preserve meaning, target phrases and sentence order", () =>
   assert.equal(extractKeywords(candidate).includes("need"), false);
   assert.ok(extractKeywords(candidate).join(" ").length < candidate.text.length);
   assert.ok(
-    extractKeywords({ ...candidate, text: "Keep going.", targetPhrase: "keep going" }).length > 0,
+    extractKeywords({
+      ...candidate,
+      text: "Keep going.",
+      targetPhrase: "keep going",
+    }).length > 0,
   );
 });
 test("personalize uses specific replaceable blanks before general rules", () => {

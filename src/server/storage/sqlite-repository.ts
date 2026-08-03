@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { Lesson } from "../../types/lesson";
+import { extractListeningItems } from "../../lib/listening-practice";
 import {
   applyLessonProgressCommand,
   normalizeLessonProgress,
@@ -196,7 +197,9 @@ export class SqliteStorageRepository implements StorageRepository {
     } catch (error) {
       this.database.exec("ROLLBACK");
       if (String(error).includes("UNIQUE constraint failed")) {
-        throw new StorageError("CONFLICT", "Lesson ID đã tồn tại.", { cause: error });
+        throw new StorageError("CONFLICT", "Lesson ID đã tồn tại.", {
+          cause: error,
+        });
       }
       throw error;
     }
@@ -240,6 +243,17 @@ export class SqliteStorageRepository implements StorageRepository {
           ...sourceParameters(source),
           id,
         );
+      const currentListeningIds = extractListeningItems(lesson).map((item) => item.id);
+      if (currentListeningIds.length) {
+        this.database
+          .prepare(
+            `DELETE FROM listening_item_progress
+             WHERE lesson_id=? AND id NOT IN (${currentListeningIds.map(() => "?").join(",")})`,
+          )
+          .run(id, ...currentListeningIds);
+      } else {
+        this.database.prepare("DELETE FROM listening_item_progress WHERE lesson_id=?").run(id);
+      }
       assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {

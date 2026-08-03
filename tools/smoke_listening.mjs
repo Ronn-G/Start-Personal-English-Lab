@@ -174,7 +174,10 @@ async function prepareAudio(item) {
 }
 
 try {
-  const listeningUi = await readFile(resolve("src", "components", "ListeningPractice.tsx"), "utf8");
+  const listeningUi = [
+    await readFile(resolve("src", "components", "ListeningPractice.tsx"), "utf8"),
+    await readFile(resolve("src", "components", "listening", "AudioControls.tsx"), "utf8"),
+  ].join("\n");
   if (
     /I can hear it now|I could hear it|understood it after reading|understand it after reading|Still difficult|mark_recognized|mark_difficult|mark_understood_after_reading/i.test(
       listeningUi,
@@ -184,8 +187,6 @@ try {
   }
   for (const label of [
     "Play",
-    "Loop 3",
-    "Loop 5",
     "Stop",
     "Reveal sentence",
     "Practice this sentence",
@@ -194,6 +195,9 @@ try {
     "Retry Kokoro",
   ]) {
     if (!listeningUi.includes(label)) throw new Error(`Listening UI is missing ${label}.`);
+  }
+  if (!listeningUi.includes("[3, 5]")) {
+    throw new Error("Listening UI is missing Loop 3/Loop 5 controls.");
   }
 
   let health;
@@ -210,7 +214,7 @@ try {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
   }
   if (!health) throw new Error(`Standalone server failed. ${stderr}`.trim());
-  if (health.schemaVersion !== 12) throw new Error("Listening schema is not v12.");
+  if (health.schemaVersion !== 13) throw new Error("Listening schema is not v13.");
 
   for (const currentLesson of [lesson, otherLesson]) {
     const response = await fetch(`${baseUrl}/api/storage/lessons`, {
@@ -246,6 +250,20 @@ try {
     throw new Error("Start/resume listening failed.");
   }
   const sessionId = started.session.id;
+  const selectedIds = started.session.selectedItemIds;
+  const selectedTexts = started.items.map((item) => item.text);
+  const listeningTrack = started.track;
+  if (
+    selectedIds.length > 8 ||
+    selectedIds.length < 4 ||
+    new Set(selectedIds).size !== selectedIds.length ||
+    started.items.map((item) => item.id).join("|") !== selectedIds.join("|") ||
+    listeningTrack !== selectedTexts.join(" ") ||
+    !started.session.trackHash ||
+    started.session.selectionVersion !== 1
+  ) {
+    throw new Error("Listening session snapshot is not bounded, unique, or coherent.");
+  }
   const itemId = started.items[0].id;
   const sourceTypes = ["shadowing", "example", "sentence_mining", "vocabulary"];
   const sourceItems = sourceTypes.map((sourceType) => {
@@ -280,10 +298,28 @@ try {
   if (state.session.currentStep !== "check_meaning") {
     throw new Error("First Listen did not persist.");
   }
+  if (
+    state.session.selectedItemIds.join("|") !== selectedIds.join("|") ||
+    state.items.map((item) => item.id).join("|") !== selectedIds.join("|") ||
+    state.track !== listeningTrack
+  ) {
+    throw new Error("Check Meaning drifted from the session snapshot.");
+  }
   state = await postListening("reveal_item", { sessionId, itemId });
+  state = await postListening("reveal_all", {
+    sessionId,
+    itemIds: selectedIds,
+  });
+  if (
+    state.session.revealedItemIds.length !== selectedIds.length ||
+    state.session.revealedItemIds.some((id) => !selectedIds.includes(id))
+  ) {
+    throw new Error("Reveal All affected items outside the selected snapshot.");
+  }
   state = await postListening("record_listen", { sessionId, itemId });
   state = await postListening("record_loop", { sessionId, itemId, count: 3 });
   state = await postListening("set_saved_for_relisten", {
+    sessionId,
     itemId,
     saved: true,
   });
@@ -314,6 +350,47 @@ try {
     speaking.tasks[0].sourceItemId !== listeningItem.sourceItemId
   ) {
     throw new Error("Listening to Speaking Ladder source link failed.");
+  }
+
+  const removedSource = sourceItems.find((item) => item.sourceType === "vocabulary");
+  const updatedLesson = structuredClone(lesson);
+  updatedLesson.updatedAt = new Date(Date.parse(lesson.updatedAt) + 1_000).toISOString();
+  updatedLesson.vocabulary = updatedLesson.vocabulary.map((item) =>
+    item.id === removedSource.sourceItemId ? { ...item, context: undefined } : item,
+  );
+  updatedLesson.exampleSentences[0].sentence =
+    "The updated lesson supplies a new sentence for the next listening session.";
+  const updateResponse = await fetch(`${baseUrl}/api/storage/lessons/${lesson.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lesson: updatedLesson }),
+  });
+  if (!updateResponse.ok) {
+    throw new Error(
+      `Lesson update failed (${updateResponse.status}): ${await updateResponse.text()}`,
+    );
+  }
+  state = await postListening("status");
+  if (
+    state.session.selectedItemIds.join("|") !== selectedIds.join("|") ||
+    state.items.map((item) => item.text).join("|") !== selectedTexts.join("|") ||
+    state.track !== listeningTrack ||
+    state.items.find((item) => item.id === removedSource.id)?.sourceAvailable !== false
+  ) {
+    throw new Error("An active Listening snapshot changed after its lesson was updated.");
+  }
+  const staleSpeaking = await fetch(`${baseUrl}/api/speaking`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "practice_item",
+      lessonId: lesson.id,
+      sourceType: removedSource.sourceType,
+      sourceItemId: removedSource.sourceItemId,
+    }),
+  });
+  if (staleSpeaking.status !== 400) {
+    throw new Error("A removed Listening source did not fail its Speaking transition safely.");
   }
 
   const invalidTransition = await fetch(`${baseUrl}/api/listening`, {
@@ -374,9 +451,37 @@ try {
   if (state.session.currentStep !== "sentence_review") {
     throw new Error("Second Listen did not persist.");
   }
+  if (
+    state.session.selectedItemIds.join("|") !== selectedIds.join("|") ||
+    state.items.map((item) => item.id).join("|") !== selectedIds.join("|") ||
+    state.track !== listeningTrack
+  ) {
+    throw new Error("Sentence Review drifted from the active snapshot.");
+  }
   for (const item of sourceItems) {
-    state = await postListening("record_listen", { sessionId, itemId: item.id });
+    state = await postListening("record_listen", {
+      sessionId,
+      itemId: item.id,
+    });
+    if (item.id === removedSource.id) {
+      const staleBookmark = await fetch(`${baseUrl}/api/listening`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_saved_for_relisten",
+          lessonId: lesson.id,
+          sessionId,
+          itemId: item.id,
+          saved: true,
+        }),
+      });
+      if (staleBookmark.status !== 400) {
+        throw new Error("A stale Listening source created a Re-listen bookmark.");
+      }
+      continue;
+    }
     state = await postListening("set_saved_for_relisten", {
+      sessionId,
       itemId: item.id,
       saved: true,
     });
@@ -389,6 +494,12 @@ try {
     sessionId,
     nextStep: "final_relisten",
   });
+  if (
+    state.track !== listeningTrack ||
+    state.session.selectedItemIds.join("|") !== selectedIds.join("|")
+  ) {
+    throw new Error("Final Re-listen drifted from the active snapshot.");
+  }
   state = await postListening("complete", {
     sessionId,
     note: "The familiar phrases were clearer.",
@@ -417,7 +528,9 @@ try {
     reloaded.session.secondListenComprehension !== "main_idea" ||
     sourceItems.some((item) => {
       const progress = reloaded.items.find((candidate) => candidate.id === item.id)?.progress;
-      return !progress || !progress.savedForRelisten;
+      return item.id === removedSource.id
+        ? progress?.savedForRelisten
+        : !progress || !progress.savedForRelisten;
     })
   ) {
     throw new Error("Listening reload persistence failed.");
@@ -428,14 +541,15 @@ try {
     body: JSON.stringify({ action: "dashboard" }),
   }).then((response) => response.json());
   if (
-    dashboard.review.length !== sourceItems.length ||
+    dashboard.review.length !== sourceItems.length - 1 ||
     dashboard.review.some(
       (entry) =>
-        entry.lessonId !== lesson.id ||
-        !sourceItems.some((item) => item.id === entry.itemId && item.text === entry.text),
+        entry.lessonId !== lesson.id || !sourceItems.some((item) => item.id === entry.itemId),
     )
   ) {
-    throw new Error("Saved listening items did not appear in Re-listen.");
+    throw new Error(
+      `Saved listening items did not appear in Re-listen: ${JSON.stringify(dashboard.review)}`,
+    );
   }
   const removedItem = sourceItems[0];
   state = await postListening("set_saved_for_relisten", {
@@ -457,7 +571,7 @@ try {
     body: JSON.stringify({ action: "dashboard" }),
   }).then((response) => response.json());
   if (
-    dashboardAfterRemove.review.length !== sourceItems.length - 1 ||
+    dashboardAfterRemove.review.length !== sourceItems.length - 2 ||
     dashboardAfterRemove.review.some((entry) => entry.itemId === removedItem.id)
   ) {
     throw new Error("Removing one Re-listen bookmark updated the wrong item.");
@@ -469,15 +583,55 @@ try {
   }).then((response) => response.json());
   if (otherStatus.session !== null) throw new Error("Lesson isolation failed.");
 
+  const again = await postListening("practice_again");
+  if (
+    again.session.id === sessionId ||
+    again.session.currentStep !== "first_listen" ||
+    again.session.status !== "active" ||
+    again.track === listeningTrack ||
+    again.session.selectedItemIds.join("|") === selectedIds.join("|")
+  ) {
+    throw new Error("Practice Again did not snapshot the updated lesson.");
+  }
+  const restoredSnapshot = {
+    sessionId: again.session.id,
+    selectedIds: [...again.session.selectedItemIds],
+    track: again.track,
+    trackHash: again.session.trackHash,
+  };
   const backup = await fetch(`${baseUrl}/api/backup/export`).then((response) => response.json());
   if (
-    backup.listeningSessions.length !== 1 ||
-    backup.listeningItemProgress.length !== sourceItems.length ||
+    backup.listeningSessions.length !== 2 ||
+    backup.listeningItemProgress.length !== selectedIds.length - 1 ||
     backup.listeningItemProgress.filter((item) => item.savedForRelisten).length !==
-      sourceItems.length - 1 ||
+      sourceItems.length - 2 ||
+    !backup.listeningSessions.some(
+      (session) =>
+        session.id === restoredSnapshot.sessionId &&
+        session.track === restoredSnapshot.track &&
+        session.trackHash === restoredSnapshot.trackHash &&
+        session.selectedItemIds.join("|") === restoredSnapshot.selectedIds.join("|"),
+    ) ||
     "audioCache" in backup
   ) {
     throw new Error("Listening backup export failed.");
+  }
+  const restoreResponse = await fetch(`${baseUrl}/api/backup/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "replace", backup, confirmReplace: true }),
+  });
+  if (!restoreResponse.ok) {
+    throw new Error(`Listening backup restore failed: ${await restoreResponse.text()}`);
+  }
+  const restored = await postListening("status");
+  if (
+    restored.session.id !== restoredSnapshot.sessionId ||
+    restored.session.selectedItemIds.join("|") !== restoredSnapshot.selectedIds.join("|") ||
+    restored.track !== restoredSnapshot.track ||
+    restored.session.trackHash !== restoredSnapshot.trackHash
+  ) {
+    throw new Error("Backup restore changed the active Listening snapshot.");
   }
 
   const database = await stat(join(dataDirectory, "personal-english-lab.sqlite3"));
@@ -502,6 +656,11 @@ try {
         savedRelistenCount: sourceItems.length - 1,
         assessmentControlsRemoved: true,
         speakingSourceLinked: true,
+        selectedSnapshotItems: selectedIds.length,
+        activeSnapshotSurvivedLessonUpdate: true,
+        practiceAgainUsesUpdatedLesson: true,
+        backupSnapshotRestored: true,
+        staleSpeakingLinkRejected: true,
         backupListeningSessions: backup.listeningSessions.length,
         backupListeningItems: backup.listeningItemProgress.length,
         databaseBytes: database.size,

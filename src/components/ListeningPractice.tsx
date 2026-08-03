@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAppAudio } from "@/hooks/useAppAudio";
 import {
-  selectSourceDiverseListeningItems,
   type ComprehensionLevel,
   type ListeningSourceType,
   type ListeningStep,
 } from "@/lib/listening-practice";
+import { ListeningAudioControls, PracticeTrack } from "@/components/listening/AudioControls";
 
 interface ListeningProgress {
   listenCount: number;
@@ -28,6 +28,7 @@ interface ListeningItemData {
   meaning?: string;
   sourceContext?: string;
   speakingPracticeItemId?: string;
+  sourceAvailable: boolean;
   progress: ListeningProgress;
 }
 
@@ -41,6 +42,10 @@ interface ListeningSessionData {
   secondListenComprehension: ComprehensionLevel | null;
   finalNote: string;
   revealedItemIds: string[];
+  selectedItemIds: string[];
+  trackHash: string;
+  lessonContentHash: string;
+  selectionVersion: number;
   startedAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -67,10 +72,26 @@ const comprehensionOptions: Array<{
   label: string;
   detail: string;
 }> = [
-  { value: "mostly_lost", label: "Mostly lost", detail: "I caught very little." },
-  { value: "some_parts", label: "Some parts", detail: "I understood a few pieces." },
-  { value: "main_idea", label: "Main idea", detail: "I followed the main message." },
-  { value: "most_of_it", label: "Most of it", detail: "I understood nearly everything." },
+  {
+    value: "mostly_lost",
+    label: "Mostly lost",
+    detail: "I caught very little.",
+  },
+  {
+    value: "some_parts",
+    label: "Some parts",
+    detail: "I understood a few pieces.",
+  },
+  {
+    value: "main_idea",
+    label: "Main idea",
+    detail: "I followed the main message.",
+  },
+  {
+    value: "most_of_it",
+    label: "Most of it",
+    detail: "I understood nearly everything.",
+  },
 ];
 
 const comprehensionLabel = Object.fromEntries(
@@ -106,9 +127,14 @@ export default function ListeningPractice({
   const [data, setData] = useState<ListeningData | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
   const command: Command = async (action, extra = {}, quiet = false) => {
-    if (!quiet) setBusy(true);
+    if (!quiet && busyRef.current) return;
+    if (!quiet) {
+      busyRef.current = true;
+      setBusy(true);
+    }
     setError("");
     try {
       const response = await fetch("/api/listening", {
@@ -121,14 +147,29 @@ export default function ListeningPractice({
           ...extra,
         }),
       });
-      const body = (await response.json()) as ListeningData & { error?: string };
-      if (!response.ok) throw new Error(body.error ?? "Could not save listening progress.");
+      const body = (await response.json()) as ListeningData & {
+        error?: string;
+      };
+      if (!response.ok) {
+        if (response.status === 409) {
+          const reload = await fetch("/api/listening", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "status", lessonId }),
+          });
+          if (reload.ok) setData((await reload.json()) as ListeningData);
+        }
+        throw new Error(body.error ?? "Could not save listening progress.");
+      }
       setData(body);
       return body;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not save listening progress.");
     } finally {
-      if (!quiet) setBusy(false);
+      if (!quiet) {
+        busyRef.current = false;
+        setBusy(false);
+      }
     }
   };
 
@@ -140,7 +181,9 @@ export default function ListeningPractice({
       body: JSON.stringify({ action: "status", lessonId }),
     })
       .then(async (response) => {
-        const body = (await response.json()) as ListeningData & { error?: string };
+        const body = (await response.json()) as ListeningData & {
+          error?: string;
+        };
         if (!response.ok) throw new Error(body.error ?? "Could not load listening practice.");
         if (active) setData(body);
       })
@@ -262,14 +305,7 @@ function ActiveListeningSession({
     );
   });
   const activeStep = stepOrder.indexOf(session.currentStep);
-  const reviewItems = selectSourceDiverseListeningItems(
-    [...data.items].sort(
-      (left, right) =>
-        Number(session.revealedItemIds.includes(right.id)) -
-          Number(session.revealedItemIds.includes(left.id)) || left.id.localeCompare(right.id),
-    ),
-    8,
-  );
+  const reviewItems = data.items;
   const reviewAudioKey = reviewItems.map((item) => item.id).join("|");
 
   useEffect(() => {
@@ -383,6 +419,9 @@ function ActiveListeningSession({
               Simple Summary
             </p>
             <p className="mt-2 text-lg leading-relaxed text-body">{data.summary}</p>
+            <p className="mt-2 text-sm font-bold text-muted">
+              These are the same {data.items.length} sentences used by every listening step.
+            </p>
           </div>
           <UsefulPhrases items={data.items} />
           <SentenceTranscript
@@ -419,7 +458,9 @@ function ActiveListeningSession({
             disabled={busy || !secondRating}
             onClick={() => {
               playback.stop(true);
-              void command("save_second_listen", { comprehension: secondRating });
+              void command("save_second_listen", {
+                comprehension: secondRating,
+              });
             }}
           >
             Review the sentences
@@ -508,76 +549,6 @@ function ActiveListeningSession({
   );
 }
 
-function PracticeTrack({
-  track,
-  rate,
-  setRate,
-  playback,
-}: {
-  track: string;
-  rate: number;
-  setRate: (value: number) => void;
-  playback: ReturnType<typeof useAppAudio>;
-}) {
-  const active = playback.state.itemId === "track";
-  return (
-    <div className="rounded-2xl border-2 border-border p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="font-extrabold text-heading">Kokoro practice audio</p>
-          <p className="text-sm text-muted">
-            Generated from this lesson’s saved transcript or practice sentences.
-          </p>
-        </div>
-        <label className="text-sm font-bold text-heading">
-          Speed{" "}
-          <select
-            value={rate}
-            onChange={(event) => setRate(Number(event.target.value))}
-            className="rounded-lg border border-border bg-background px-2 py-1"
-          >
-            <option value={0.72}>Slow</option>
-            <option value={0.86}>Normal</option>
-            <option value={1}>Fast</option>
-          </select>
-        </label>
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={!track || playback.state.loading}
-          onClick={() => void playback.play("track", track, 1, rate)}
-          className="rounded-full bg-primary px-5 py-2 font-bold text-white disabled:opacity-40"
-        >
-          {active && playback.state.loading ? "Preparing…" : "Play"}
-        </button>
-        {active && (playback.state.playing || playback.state.paused) ? (
-          <button
-            type="button"
-            onClick={playback.togglePause}
-            className="rounded-full border-2 border-primary px-4 py-2 font-bold text-primary"
-          >
-            {playback.state.paused ? "Continue" : "Pause"}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          disabled={!track}
-          onClick={() => void playback.play("track", track, 1, rate)}
-          className="rounded-full border-2 border-border px-4 py-2 font-bold"
-        >
-          Replay
-        </button>
-        {active && playback.state.source ? (
-          <span role="status" className="self-center text-xs text-muted">
-            {playback.state.source === "kokoro" ? "Kokoro local" : "Browser voice fallback"}
-          </span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function HiddenTranscriptNotice() {
   return (
     <div className="rounded-2xl border-2 border-dashed border-border p-5 text-center">
@@ -638,98 +609,6 @@ function UsefulPhrases({ items }: { items: ListeningItemData[] }) {
   );
 }
 
-function ListeningAudioControls({
-  item,
-  rate,
-  playback,
-  loops = false,
-}: {
-  item: ListeningItemData;
-  rate: number;
-  playback: ReturnType<typeof useAppAudio>;
-  loops?: boolean;
-}) {
-  const active = playback.state.itemId === item.id;
-  const audio = playback.audioStatus(item.id);
-  const audioLabel =
-    audio.status === "ready"
-      ? "Kokoro audio ready"
-      : audio.status === "browser"
-        ? "Using browser voice"
-        : audio.status === "failed"
-          ? "Audio failed"
-          : audio.status === "preparing"
-            ? "Preparing Kokoro audio"
-            : "Kokoro audio starts on Play";
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-muted">
-        <span role="status">{audioLabel}</span>
-        {audio.status === "browser" || audio.status === "failed" ? (
-          <button
-            type="button"
-            disabled={active && playback.state.loading}
-            onClick={() => void playback.retryKokoro(item.id, item.text, rate)}
-            className="text-primary underline disabled:cursor-wait disabled:opacity-50"
-          >
-            {active && playback.state.loading ? "Retrying Kokoro..." : "Retry Kokoro"}
-          </button>
-        ) : null}
-      </div>
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={active && playback.state.loading}
-          onClick={() => void playback.play(item.id, item.text, 1, rate)}
-          className="rounded-full bg-primary px-4 py-2 text-sm font-bold text-white disabled:cursor-wait disabled:opacity-50"
-        >
-          {active && playback.state.loading && playback.state.target === 1
-            ? "Preparing..."
-            : "Play"}
-        </button>
-        {loops ? (
-          <>
-            <button
-              type="button"
-              disabled={active && playback.state.loading}
-              onClick={() => void playback.play(item.id, item.text, 3, rate)}
-              className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary disabled:cursor-wait disabled:opacity-50"
-            >
-              Loop 3
-            </button>
-            <button
-              type="button"
-              disabled={active && playback.state.loading}
-              onClick={() => void playback.play(item.id, item.text, 5, rate)}
-              className="rounded-full border-2 border-primary px-4 py-2 text-sm font-bold text-primary disabled:cursor-wait disabled:opacity-50"
-            >
-              Loop 5
-            </button>
-            <button
-              type="button"
-              disabled={
-                !active ||
-                (!playback.state.loading && !playback.state.playing && !playback.state.paused)
-              }
-              onClick={() => playback.stop(true)}
-              className="rounded-full border-2 border-border px-4 py-2 text-sm font-bold disabled:opacity-40"
-            >
-              Stop
-            </button>
-          </>
-        ) : null}
-      </div>
-      {active && playback.state.target > 1 ? (
-        <p role="status" className="mt-2 text-sm font-bold text-muted">
-          {playback.state.loading
-            ? "Preparing Kokoro audio"
-            : `Listened ${playback.state.completed} of ${playback.state.target}`}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 function SentenceTranscript({
   items,
   revealed,
@@ -743,7 +622,6 @@ function SentenceTranscript({
   rate: number;
   command: Command;
 }) {
-  const visibleItems = selectSourceDiverseListeningItems(items, 8);
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -755,7 +633,9 @@ function SentenceTranscript({
           type="button"
           onClick={() => {
             if (window.confirm("Reveal every practice sentence in this session?"))
-              void command("reveal_all");
+              void command("reveal_all", {
+                itemIds: items.map((item) => item.id),
+              });
           }}
           className="font-bold text-primary underline"
         >
@@ -763,10 +643,14 @@ function SentenceTranscript({
         </button>
       </div>
       <ol className="mt-3 space-y-2">
-        {visibleItems.map((item, index) => {
+        {items.map((item, index) => {
           const isRevealed = revealed.has(item.id);
           return (
-            <li key={item.id} className="rounded-xl border border-border p-3">
+            <li
+              key={item.id}
+              data-listening-item-id={item.id}
+              className="rounded-xl border border-border p-3"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-bold text-muted">Sentence {index + 1}</span>
                 {!isRevealed ? (
@@ -824,7 +708,7 @@ function AudioFirstCard({
   }
 
   return (
-    <article className="rounded-2xl border-2 border-border p-4">
+    <article data-listening-item-id={item.id} className="rounded-2xl border-2 border-border p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-extrabold text-muted">Audio first</p>
         <span className="text-xs text-muted">
@@ -861,7 +745,7 @@ function AudioFirstCard({
         </div>
       )}
       <div className="mt-4 flex flex-wrap gap-2">
-        {revealed && item.speakingPracticeItemId ? (
+        {revealed && item.speakingPracticeItemId && item.sourceAvailable ? (
           <button
             type="button"
             onClick={practiceSpeaking}
@@ -873,7 +757,7 @@ function AudioFirstCard({
         <button
           type="button"
           aria-pressed={item.progress.savedForRelisten}
-          disabled={savingBookmark}
+          disabled={savingBookmark || !item.sourceAvailable}
           onClick={() => void toggleSaved()}
           className={`rounded-full border-2 px-3 py-2 text-sm font-bold disabled:cursor-wait disabled:opacity-50 ${
             item.progress.savedForRelisten
@@ -890,6 +774,12 @@ function AudioFirstCard({
               : "Save for re-listen"}
         </button>
       </div>
+      {!item.sourceAvailable ? (
+        <p role="status" className="mt-3 text-sm font-bold text-muted">
+          This source sentence no longer exists in the current lesson. The active session snapshot
+          remains playable, but Speaking and re-listen actions are unavailable.
+        </p>
+      ) : null}
       {bookmarkError ? (
         <p role="alert" className="mt-3 text-sm font-bold text-wrong">
           Re-listen bookmark was not saved.{" "}

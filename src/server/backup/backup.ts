@@ -26,9 +26,13 @@ import {
   FINAL_RELISTEN_RATINGS,
   LISTENING_RECOGNITION_STATES,
   LISTENING_STEPS,
+  createListeningSessionSnapshot,
   extractListeningItems,
+  isListeningSessionSnapshot,
   listeningItemId,
+  type ListeningItem,
   type ListeningRecognitionState,
+  type ListeningSessionSnapshot,
   type ListeningStep,
 } from "../../lib/listening-practice";
 
@@ -131,6 +135,12 @@ export interface ListeningSessionBackup {
   finalRelistenRating?: (typeof FINAL_RELISTEN_RATINGS)[number];
   finalNote: string;
   revealedItemIds: string[];
+  selectedItemIds?: string[];
+  selectedItems?: ListeningItem[];
+  track?: string;
+  trackHash?: string;
+  lessonContentHash?: string;
+  selectionVersion?: number;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -378,7 +388,11 @@ export function validateBackup(value: unknown): {
   if (!record(value))
     return {
       diagnostics: [
-        { code: "INVALID_BACKUP", path: "$", message: "Backup phải là một đối tượng JSON." },
+        {
+          code: "INVALID_BACKUP",
+          path: "$",
+          message: "Backup phải là một đối tượng JSON.",
+        },
       ],
     };
   let serializedBytes = Number.POSITIVE_INFINITY;
@@ -398,7 +412,11 @@ export function validateBackup(value: unknown): {
       message: `Backup vượt quá giới hạn ${MAX_BACKUP_BYTES} byte.`,
     });
   if (value.backupFormat !== BACKUP_FORMAT)
-    d.push({ code: "INVALID_FORMAT", path: "$.backupFormat", message: "Sai định dạng backup." });
+    d.push({
+      code: "INVALID_FORMAT",
+      path: "$.backupFormat",
+      message: "Sai định dạng backup.",
+    });
   if (value.backupVersion !== 1 && value.backupVersion !== CURRENT_BACKUP_VERSION)
     d.push({
       code: "UNSUPPORTED_BACKUP_VERSION",
@@ -423,7 +441,11 @@ export function validateBackup(value: unknown): {
     "integrity",
   ])
     if (!(key in value))
-      d.push({ code: "MISSING_FIELD", path: `$.${key}`, message: `Thiếu trường ${key}.` });
+      d.push({
+        code: "MISSING_FIELD",
+        path: `$.${key}`,
+        message: `Thiếu trường ${key}.`,
+      });
   if (!iso(value.exportedAt))
     d.push({
       code: "INVALID_EXPORTED_AT",
@@ -550,7 +572,11 @@ export function validateBackup(value: unknown): {
     value.lessonSources.forEach((source, index) => {
       const path = `$.lessonSources[${index}]`;
       if (!record(source)) {
-        d.push({ code: "INVALID_LESSON_SOURCE", path, message: "Nguồn bài học phải là object." });
+        d.push({
+          code: "INVALID_LESSON_SOURCE",
+          path,
+          message: "Nguồn bài học phải là object.",
+        });
         return;
       }
       if (!hasExactKeys(source, SOURCE_KEYS))
@@ -681,7 +707,11 @@ export function validateBackup(value: unknown): {
     value.speakingProgress.forEach((progress, index) => {
       const path = `$.speakingProgress[${index}]`;
       if (!record(progress)) {
-        d.push({ code: "INVALID_SPEAKING_PROGRESS", path, message: "Tiến độ nói phải là object." });
+        d.push({
+          code: "INVALID_SPEAKING_PROGRESS",
+          path,
+          message: "Tiến độ nói phải là object.",
+        });
         return;
       }
       const required = SPEAKING_PROGRESS_KEYS.filter(
@@ -797,7 +827,11 @@ export function validateBackup(value: unknown): {
     value.speakingSessions.forEach((session, index) => {
       const path = `$.speakingSessions[${index}]`;
       if (!record(session)) {
-        d.push({ code: "INVALID_SPEAKING_SESSION", path, message: "Phiên nói phải là object." });
+        d.push({
+          code: "INVALID_SPEAKING_SESSION",
+          path,
+          message: "Phiên nói phải là object.",
+        });
         return;
       }
       const required = SPEAKING_SESSION_KEYS.filter(
@@ -1040,6 +1074,50 @@ export function validateBackup(value: unknown): {
   if (Array.isArray(value.listeningSessions)) {
     value.listeningSessions.forEach((session, index) => {
       const path = `$.listeningSessions[${index}]`;
+      let snapshotValid = true;
+      let revealedIdsValid = true;
+      if (record(session)) {
+        const snapshotValues = [
+          session.selectedItemIds,
+          session.selectedItems,
+          session.track,
+          session.trackHash,
+          session.lessonContentHash,
+          session.selectionVersion,
+        ];
+        const hasSnapshot = snapshotValues.some((entry) => entry !== undefined);
+        const hasCompleteSnapshot = snapshotValues.every((entry) => entry !== undefined);
+        const snapshot = hasCompleteSnapshot
+          ? {
+              selectedItemIds: session.selectedItemIds,
+              selectedItems: session.selectedItems,
+              track: session.track,
+              trackHash: session.trackHash,
+              lessonContentHash: session.lessonContentHash,
+              selectionVersion: session.selectionVersion,
+            }
+          : undefined;
+        snapshotValid =
+          !hasSnapshot ||
+          (hasCompleteSnapshot &&
+            isListeningSessionSnapshot(snapshot, String(session.lessonId ?? "")));
+        if (!snapshotValid) {
+          d.push({
+            code: "INVALID_LISTENING_SNAPSHOT",
+            path: `${path}.selectedItems`,
+            message: "Listening snapshot thiếu field, vượt giới hạn hoặc không nhất quán.",
+          });
+        }
+        if (Array.isArray(session.revealedItemIds)) {
+          const allowedIds =
+            snapshot && isListeningSessionSnapshot(snapshot, String(session.lessonId ?? ""))
+              ? new Set(snapshot.selectedItemIds)
+              : new Set(listeningItems.get(String(session.lessonId))?.keys() ?? ([] as string[]));
+          revealedIdsValid = session.revealedItemIds.every(
+            (itemId) => typeof itemId === "string" && allowedIds.has(itemId),
+          );
+        }
+      }
       if (
         !record(session) ||
         typeof session.id !== "string" ||
@@ -1050,11 +1128,8 @@ export function validateBackup(value: unknown): {
         !["active", "completed", "cancelled"].includes(String(session.status)) ||
         !LISTENING_STEPS.includes(session.currentStep as ListeningStep) ||
         !Array.isArray(session.revealedItemIds) ||
-        session.revealedItemIds.some(
-          (itemId) =>
-            typeof itemId !== "string" ||
-            !listeningItems.get(String(session.lessonId))?.has(itemId),
-        ) ||
+        !revealedIdsValid ||
+        !snapshotValid ||
         typeof session.firstListenNote !== "string" ||
         session.firstListenNote.length > 1000 ||
         typeof session.finalNote !== "string" ||
@@ -1304,6 +1379,12 @@ function createBackupDocument(
         : {}),
       finalNote: String(row.final_note),
       revealedItemIds: JSON.parse(String(row.revealed_item_ids_json)) as string[],
+      selectedItemIds: JSON.parse(String(row.selected_item_ids_json)) as string[],
+      selectedItems: JSON.parse(String(row.selected_items_json)) as ListeningItem[],
+      track: String(row.listening_track),
+      trackHash: String(row.track_hash),
+      lessonContentHash: String(row.lesson_content_hash),
+      selectionVersion: Number(row.selection_version),
       startedAt: String(row.started_at),
       updatedAt: String(row.updated_at),
       ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
@@ -1668,11 +1749,28 @@ export function mergeListeningSession(
       : Date.parse(current.completedAt) >= Date.parse(incoming.completedAt)
         ? current.completedAt
         : incoming.completedAt;
+  const snapshotOwner = current.selectedItems?.length ? current : incoming;
+  const selectedIds = snapshotOwner.selectedItemIds
+    ? new Set(snapshotOwner.selectedItemIds)
+    : undefined;
+  const revealedItemIds = [
+    ...new Set([...current.revealedItemIds, ...incoming.revealedItemIds]),
+  ].filter((itemId) => !selectedIds || selectedIds.has(itemId));
   return {
     ...newer,
     status: completed ? "completed" : newer.status,
     currentStep: completed ? "complete" : farther.currentStep,
-    revealedItemIds: [...new Set([...current.revealedItemIds, ...incoming.revealedItemIds])],
+    revealedItemIds,
+    ...(snapshotOwner.selectedItemIds && snapshotOwner.selectedItems
+      ? {
+          selectedItemIds: snapshotOwner.selectedItemIds,
+          selectedItems: snapshotOwner.selectedItems,
+          track: snapshotOwner.track,
+          trackHash: snapshotOwner.trackHash,
+          lessonContentHash: snapshotOwner.lessonContentHash,
+          selectionVersion: snapshotOwner.selectionVersion,
+        }
+      : {}),
     startedAt:
       Date.parse(current.startedAt) <= Date.parse(incoming.startedAt)
         ? current.startedAt
@@ -1749,9 +1847,39 @@ function dbListeningSession(row: Record<string, unknown>): ListeningSessionBacku
       : {}),
     finalNote: String(row.final_note),
     revealedItemIds: JSON.parse(String(row.revealed_item_ids_json)) as string[],
+    selectedItemIds: JSON.parse(String(row.selected_item_ids_json)) as string[],
+    selectedItems: JSON.parse(String(row.selected_items_json)) as ListeningItem[],
+    track: String(row.listening_track),
+    trackHash: String(row.track_hash),
+    lessonContentHash: String(row.lesson_content_hash),
+    selectionVersion: Number(row.selection_version),
     startedAt: String(row.started_at),
     updatedAt: String(row.updated_at),
     ...(row.completed_at ? { completedAt: String(row.completed_at) } : {}),
+  };
+}
+
+function remapListeningSnapshot(
+  snapshot: ListeningSessionSnapshot,
+  targetLessonId: string,
+  targetItems: ListeningItem[],
+): ListeningSessionSnapshot {
+  const targetByIdentity = new Map(
+    targetItems.map((item) => [`${item.sourceType}|${item.sourceItemId}`, item]),
+  );
+  const selectedItems = snapshot.selectedItems.map((item) => {
+    const target = targetByIdentity.get(`${item.sourceType}|${item.sourceItemId}`);
+    return {
+      ...item,
+      id: listeningItemId(targetLessonId, item.sourceType, item.sourceItemId),
+      lessonId: targetLessonId,
+      speakingPracticeItemId: target?.speakingPracticeItemId,
+    };
+  });
+  return {
+    ...snapshot,
+    selectedItems,
+    selectedItemIds: selectedItems.map((item) => item.id),
   };
 }
 
@@ -1972,7 +2100,11 @@ export function importBackup(
           ? (database.prepare("SELECT * FROM speaking_sessions WHERE id=?").get(sessionId) as
               Record<string, unknown> | undefined)
           : undefined;
-      const sessionStatusRank = { active: 0, cancelled: 1, completed: 2 } as const;
+      const sessionStatusRank = {
+        active: 0,
+        cancelled: 1,
+        completed: 2,
+      } as const;
       if (
         mode === "merge" &&
         sameSession &&
@@ -2117,21 +2249,33 @@ export function importBackup(
         .prepare("SELECT lesson_json FROM lessons WHERE id=?")
         .get(id) as { lesson_json: string } | undefined;
       if (!oldLesson || !targetLessonRow) continue;
-      const oldItems = extractListeningItems(oldLesson);
       const targetItems = extractListeningItems(JSON.parse(targetLessonRow.lesson_json) as Lesson);
+      const explicitSnapshot = {
+        selectedItemIds: source.selectedItemIds,
+        selectedItems: source.selectedItems,
+        track: source.track,
+        trackHash: source.trackHash,
+        lessonContentHash: source.lessonContentHash,
+        selectionVersion: source.selectionVersion,
+      };
+      const sourceSnapshot = isListeningSessionSnapshot(explicitSnapshot, source.lessonId)
+        ? explicitSnapshot
+        : createListeningSessionSnapshot(oldLesson);
+      const targetSnapshot = remapListeningSnapshot(sourceSnapshot, id, targetItems);
       const mappedReveals = source.revealedItemIds.flatMap((oldItemId) => {
-        const oldItem = oldItems.find((item) => item.id === oldItemId);
-        if (!oldItem) return [];
-        const target = targetItems.find(
-          (item) =>
-            item.sourceType === oldItem.sourceType && item.sourceItemId === oldItem.sourceItemId,
-        );
-        return target ? [target.id] : [];
+        const index = sourceSnapshot.selectedItemIds.indexOf(oldItemId);
+        return index >= 0 ? [targetSnapshot.selectedItemIds[index]] : [];
       });
       const incoming: ListeningSessionBackup = {
         ...source,
         lessonId: id,
         revealedItemIds: mappedReveals,
+        selectedItemIds: targetSnapshot.selectedItemIds,
+        selectedItems: targetSnapshot.selectedItems,
+        track: targetSnapshot.track,
+        trackHash: targetSnapshot.trackHash,
+        lessonContentHash: targetSnapshot.lessonContentHash,
+        selectionVersion: targetSnapshot.selectionVersion,
       };
       let sessionId = source.id;
       const idCollision = database
@@ -2176,8 +2320,9 @@ export function importBackup(
           `INSERT INTO listening_sessions(
             id,lesson_id,status,current_step,first_listen_comprehension,first_listen_note,
             second_listen_comprehension,final_relisten_rating,final_note,
-            revealed_item_ids_json,started_at,updated_at,completed_at
-          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            revealed_item_ids_json,selected_item_ids_json,selected_items_json,listening_track,
+            track_hash,lesson_content_hash,selection_version,started_at,updated_at,completed_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(id) DO UPDATE SET
             lesson_id=excluded.lesson_id,status=excluded.status,current_step=excluded.current_step,
             first_listen_comprehension=excluded.first_listen_comprehension,
@@ -2185,6 +2330,11 @@ export function importBackup(
             second_listen_comprehension=excluded.second_listen_comprehension,
             final_relisten_rating=excluded.final_relisten_rating,final_note=excluded.final_note,
             revealed_item_ids_json=excluded.revealed_item_ids_json,
+            selected_item_ids_json=excluded.selected_item_ids_json,
+            selected_items_json=excluded.selected_items_json,
+            listening_track=excluded.listening_track,track_hash=excluded.track_hash,
+            lesson_content_hash=excluded.lesson_content_hash,
+            selection_version=excluded.selection_version,
             started_at=excluded.started_at,updated_at=excluded.updated_at,
             completed_at=excluded.completed_at`,
         )
@@ -2199,6 +2349,12 @@ export function importBackup(
           merged.finalRelistenRating ?? null,
           merged.finalNote,
           JSON.stringify(merged.revealedItemIds),
+          JSON.stringify(merged.selectedItemIds),
+          JSON.stringify(merged.selectedItems),
+          merged.track,
+          merged.trackHash,
+          merged.lessonContentHash,
+          merged.selectionVersion,
           merged.startedAt,
           merged.updatedAt,
           merged.completedAt ?? null,
@@ -2352,11 +2508,22 @@ export function importBackup(
         .all(id) as Record<string, unknown>[];
       for (const row of listeningSessionRows) {
         const revealed = JSON.parse(String(row.revealed_item_ids_json)) as unknown;
+        const snapshot = {
+          selectedItemIds: JSON.parse(String(row.selected_item_ids_json)) as unknown,
+          selectedItems: JSON.parse(String(row.selected_items_json)) as unknown,
+          track: String(row.listening_track),
+          trackHash: String(row.track_hash),
+          lessonContentHash: String(row.lesson_content_hash),
+          selectionVersion: Number(row.selection_version),
+        };
+        const snapshotValid = isListeningSessionSnapshot(snapshot, id);
+        const snapshotIds = snapshotValid ? new Set(snapshot.selectedItemIds) : new Set<string>();
         if (
           !SESSION_STATUSES.includes(row.status as (typeof SESSION_STATUSES)[number]) ||
           !LISTENING_STEPS.includes(row.current_step as ListeningStep) ||
           !Array.isArray(revealed) ||
-          revealed.some((itemId) => typeof itemId !== "string" || !validItems.has(itemId)) ||
+          !snapshotValid ||
+          revealed.some((itemId) => typeof itemId !== "string" || !snapshotIds.has(itemId)) ||
           (row.status === "completed" &&
             (row.current_step !== "complete" || !iso(row.completed_at)))
         )
@@ -2366,8 +2533,11 @@ export function importBackup(
     if (mode === "replace") {
       const count = (table: string) =>
         Number(
-          (database.prepare(`SELECT COUNT(*) count FROM ${table}`).get() as { count: number })
-            .count,
+          (
+            database.prepare(`SELECT COUNT(*) count FROM ${table}`).get() as {
+              count: number;
+            }
+          ).count,
         );
       if (
         count("lessons") !== doc.lessons.length ||

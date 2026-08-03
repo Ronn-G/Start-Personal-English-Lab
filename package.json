@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "tsc -p tsconfig.test.json && node --test \".test-dist/test/**/*.test.js\"",
+    "test:components": "vitest run",
     "smoke:storage": "node tools/smoke_storage.mjs",
     "smoke:backup": "tsc -p tsconfig.test.json && node --test --test-name-pattern=backup \".test-dist/test/**/*.test.js\"",
     "smoke:audio": "tsc -p tsconfig.test.json && node --test --test-name-pattern=audio \".test-dist/test/**/*.test.js\"",
@@ -32,15 +33,21 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.5",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
+    "jsdom": "^30.0.1",
     "png-to-ico": "^3.0.1",
     "prettier": "^3.9.6",
     "sharp": "^0.35.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

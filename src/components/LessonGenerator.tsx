@@ -7,7 +7,7 @@ import LessonDisplay from "@/components/LessonDisplay";
 import LegacyMigrationPanel from "@/components/LegacyMigrationPanel";
 import BackupRestorePanel from "@/components/BackupRestorePanel";
 import ThemeSwitcher from "@/components/ThemeSwitcher";
-import SpeakButton from "@/components/lesson/SpeakButton";
+import RelistenDashboard from "@/components/listening/RelistenDashboard";
 import { buildLessonPrompt } from "@/lib/lesson-prompt";
 import { formatLessonDiagnostics, parseLessonText } from "@/lib/lesson-schema";
 import { storageClient } from "@/lib/storage-client";
@@ -89,7 +89,9 @@ export default function LessonGenerator() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "dashboard" }),
     });
-    const body = (await response.json()) as ListeningDashboardData & { error?: string };
+    const body = (await response.json()) as ListeningDashboardData & {
+      error?: string;
+    };
     if (!response.ok) throw new Error(body.error ?? "Could not load saved listening items.");
     setListeningDashboard(body);
     return body;
@@ -176,7 +178,9 @@ export default function LessonGenerator() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "dashboard" }),
       });
-      const dashboard = (await response.json()) as ListeningDashboardData & { error?: string };
+      const dashboard = (await response.json()) as ListeningDashboardData & {
+        error?: string;
+      };
       if (!response.ok) throw new Error(dashboard.error ?? "Could not choose a listening lesson.");
       setListeningDashboard(dashboard);
       const lessonId = preferredLessonId ?? dashboard.active?.lessonId ?? savedLessons.at(0)?.id;
@@ -384,57 +388,12 @@ export default function LessonGenerator() {
               </span>
             </button>
           </div>
-          {listeningDashboard?.review.length ? (
-            <div className="mb-5 rounded-2xl bg-highlight p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-extrabold text-heading">Re-listen</h2>
-                  <p className="text-xs text-muted">Sentences you explicitly saved for later.</p>
-                </div>
-              </div>
-              <div className="mt-3 grid gap-2">
-                {listeningDashboard.review.slice(0, 5).map((item) => (
-                  <div key={item.itemId} className="rounded-xl bg-card p-3">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-bold text-muted">{item.title}</p>
-                        <p className="font-bold text-heading">{item.text}</p>
-                        {item.targetPhrase ? (
-                          <p className="text-xs text-muted">Target phrase: {item.targetPhrase}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <SpeakButton
-                        text={item.text}
-                        label="Play"
-                        lessonId={`relisten:${item.lessonId}`}
-                        itemId={item.itemId}
-                        sourceType="relisten"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void practiceListening(item.lessonId)}
-                        className="rounded-full border-2 border-primary px-3 py-2 text-xs font-extrabold text-primary"
-                      >
-                        Open lesson
-                      </button>
-                      <button
-                        type="button"
-                        disabled={removingRelistenId === item.itemId}
-                        onClick={() => void removeSavedSentence(item)}
-                        className="rounded-full border-2 border-border px-3 py-2 text-xs font-extrabold text-body disabled:cursor-wait disabled:opacity-50"
-                      >
-                        {removingRelistenId === item.itemId
-                          ? "Removing..."
-                          : "Remove from re-listen"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          <RelistenDashboard
+            items={listeningDashboard?.review ?? []}
+            removingId={removingRelistenId}
+            onOpen={practiceListening}
+            onRemove={removeSavedSentence}
+          />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-lg font-extrabold text-heading">Bài học đã lưu</h2>

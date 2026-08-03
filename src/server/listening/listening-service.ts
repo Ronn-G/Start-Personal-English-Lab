@@ -4,10 +4,12 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   LISTENING_STEPS,
   assertListeningTransition,
-  buildListeningTrackFromTranscript,
+  createListeningSessionSnapshot,
   extractListeningItems,
   isComprehensionLevel,
+  isListeningSessionSnapshot,
   type ListeningItem,
+  type ListeningSessionSnapshot,
   type ListeningStep,
 } from "../../lib/listening-practice";
 import type { Lesson } from "../../types/lesson";
@@ -35,6 +37,12 @@ interface SessionRow {
   final_relisten_rating: string | null;
   final_note: string;
   revealed_item_ids_json: string;
+  selected_item_ids_json: string;
+  selected_items_json: string;
+  listening_track: string;
+  track_hash: string;
+  lesson_content_hash: string;
+  selection_version: number;
   started_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -60,6 +68,7 @@ export interface ListeningCommand {
   lessonId?: unknown;
   sessionId?: unknown;
   itemId?: unknown;
+  itemIds?: unknown;
   comprehension?: unknown;
   note?: unknown;
   nextStep?: unknown;
@@ -83,7 +92,23 @@ function optionalNote(value: unknown): string {
   return value.trim();
 }
 
+function snapshotFromRow(row: SessionRow): ListeningSessionSnapshot {
+  const snapshot = {
+    selectedItemIds: JSON.parse(row.selected_item_ids_json) as unknown,
+    selectedItems: JSON.parse(row.selected_items_json) as unknown,
+    track: row.listening_track,
+    trackHash: row.track_hash,
+    lessonContentHash: row.lesson_content_hash,
+    selectionVersion: row.selection_version,
+  };
+  if (!isListeningSessionSnapshot(snapshot, row.lesson_id)) {
+    throw new StorageError("STORAGE_UNAVAILABLE", "Listening session snapshot is invalid.");
+  }
+  return snapshot;
+}
+
 function mapSession(row: SessionRow) {
+  const snapshot = snapshotFromRow(row);
   return {
     id: row.id,
     lessonId: row.lesson_id,
@@ -95,6 +120,10 @@ function mapSession(row: SessionRow) {
     finalRelistenRating: row.final_relisten_rating,
     finalNote: row.final_note,
     revealedItemIds: JSON.parse(row.revealed_item_ids_json) as string[],
+    selectedItemIds: snapshot.selectedItemIds,
+    trackHash: snapshot.trackHash,
+    lessonContentHash: snapshot.lessonContentHash,
+    selectionVersion: snapshot.selectionVersion,
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -159,7 +188,11 @@ export class ListeningService {
           requiredString(command.itemId, "Thiếu listening item ID."),
         );
       case "reveal_all":
-        return this.revealAll(lessonId, requiredString(command.sessionId, "Thiếu session ID."));
+        return this.revealAll(
+          lessonId,
+          requiredString(command.sessionId, "Thiếu session ID."),
+          command.itemIds,
+        );
       case "record_listen":
         return this.recordListening(
           lessonId,
@@ -180,6 +213,7 @@ export class ListeningService {
           lessonId,
           requiredString(command.itemId, "Thiếu listening item ID."),
           command.saved,
+          command.sessionId,
         );
       case "complete":
         return this.complete(
@@ -216,7 +250,12 @@ export class ListeningService {
          ORDER BY s.updated_at DESC LIMIT 1`,
       )
       .get() as
-      | { lesson_id: string; title: string; current_step: ListeningStep; updated_at: string }
+      | {
+          lesson_id: string;
+          title: string;
+          current_step: ListeningStep;
+          updated_at: string;
+        }
       | undefined;
     const reviewRows = this.database
       .prepare(
@@ -270,7 +309,11 @@ export class ListeningService {
     };
   }
 
-  private lesson(id: string): { row: LessonRow; lesson: Lesson; items: ListeningItem[] } {
+  private lesson(id: string): {
+    row: LessonRow;
+    lesson: Lesson;
+    items: ListeningItem[];
+  } {
     const row = this.database
       .prepare(
         `SELECT id,title,summary,lesson_json,original_transcript,processed_transcript
@@ -286,30 +329,33 @@ export class ListeningService {
     context: { row: LessonRow; lesson: Lesson; items: ListeningItem[] },
     row: SessionRow | undefined,
   ) {
+    const snapshot = row ? snapshotFromRow(row) : createListeningSessionSnapshot(context.lesson);
     const progressRows = this.database
       .prepare("SELECT * FROM listening_item_progress WHERE lesson_id=?")
       .all(context.lesson.id) as unknown as ItemProgressRow[];
     const progress = new Map(progressRows.map((item) => [item.id, item]));
+    const currentIdentities = new Set(
+      context.items.map((item) => `${item.sourceType}|${item.sourceItemId}`),
+    );
     return {
       lessonId: context.lesson.id,
       lessonTitle: context.row.title,
       summary: context.row.summary,
-      track: buildListeningTrackFromTranscript(
-        context.row.processed_transcript ?? context.row.original_transcript ?? undefined,
-        context.items,
-      ),
+      track: snapshot.track,
       session: row ? mapSession(row) : null,
-      items: context.items.map((item) => ({
+      items: snapshot.selectedItems.map((item) => ({
         ...item,
         progress: mapProgress(progress.get(item.id)),
+        sourceAvailable: currentIdentities.has(`${item.sourceType}|${item.sourceItemId}`),
       })),
-      empty: context.items.length === 0,
+      empty: snapshot.selectedItems.length === 0,
     };
   }
 
   private start(lessonId: string, practiceAgain: boolean) {
     const lesson = this.lesson(lessonId);
-    if (!lesson.items.length) return this.response(lesson, undefined);
+    const snapshot = createListeningSessionSnapshot(lesson.lesson);
+    if (!snapshot.selectedItems.length) return this.response(lesson, undefined);
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     let id: string;
@@ -339,10 +385,22 @@ export class ListeningService {
         this.database
           .prepare(
             `INSERT INTO listening_sessions(
-              id,lesson_id,status,current_step,started_at,updated_at
-            ) VALUES(?,?,'active','first_listen',?,?)`,
+              id,lesson_id,status,current_step,selected_item_ids_json,selected_items_json,
+              listening_track,track_hash,lesson_content_hash,selection_version,started_at,updated_at
+            ) VALUES(?,?,'active','first_listen',?,?,?,?,?,?,?,?)`,
           )
-          .run(id, lessonId, now, now);
+          .run(
+            id,
+            lessonId,
+            JSON.stringify(snapshot.selectedItemIds),
+            JSON.stringify(snapshot.selectedItems),
+            snapshot.track,
+            snapshot.trackHash,
+            snapshot.lessonContentHash,
+            snapshot.selectionVersion,
+            now,
+            now,
+          );
       }
       assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
@@ -389,13 +447,16 @@ export class ListeningService {
     assertListeningTransition(row.current_step, "check_meaning");
     const now = new Date().toISOString();
     this.writeWithinBackupCapacity(() => {
-      this.database
+      const result = this.database
         .prepare(
           `UPDATE listening_sessions
            SET first_listen_comprehension=?,first_listen_note=?,current_step='check_meaning',updated_at=?
            WHERE id=? AND lesson_id=? AND status='active' AND current_step='first_listen'`,
         )
         .run(comprehension, firstNote, now, sessionId, lessonId);
+      if (Number(result.changes) !== 1) {
+        throw new StorageError("CONFLICT", "Listening session changed before the step was saved.");
+      }
     });
     return this.statusWithLesson(lesson, sessionId);
   }
@@ -417,11 +478,14 @@ export class ListeningService {
     }
     const now = new Date().toISOString();
     this.writeWithinBackupCapacity(() => {
-      this.database
+      const result = this.database
         .prepare(
           "UPDATE listening_sessions SET current_step=?,updated_at=? WHERE id=? AND lesson_id=? AND status='active' AND current_step=?",
         )
         .run(target, now, sessionId, lessonId, row.current_step);
+      if (Number(result.changes) !== 1) {
+        throw new StorageError("CONFLICT", "Listening session changed before the step was saved.");
+      }
     });
     return this.statusWithLesson(lesson, sessionId);
   }
@@ -436,45 +500,63 @@ export class ListeningService {
     assertListeningTransition(row.current_step, "sentence_review");
     const now = new Date().toISOString();
     this.writeWithinBackupCapacity(() => {
-      this.database
+      const result = this.database
         .prepare(
           `UPDATE listening_sessions
            SET second_listen_comprehension=?,current_step='sentence_review',updated_at=?
            WHERE id=? AND lesson_id=? AND status='active' AND current_step='second_listen'`,
         )
         .run(comprehension, now, sessionId, lessonId);
+      if (Number(result.changes) !== 1) {
+        throw new StorageError("CONFLICT", "Listening session changed before the step was saved.");
+      }
     });
     return this.statusWithLesson(lesson, sessionId);
   }
 
-  private listeningItem(lesson: { items: ListeningItem[] }, itemId: string): ListeningItem {
-    const item = lesson.items.find((candidate) => candidate.id === itemId);
+  private listeningItem(session: SessionRow, itemId: string): ListeningItem {
+    const item = snapshotFromRow(session).selectedItems.find(
+      (candidate) => candidate.id === itemId,
+    );
     if (!item) {
-      throw new StorageError("VALIDATION_ERROR", "Câu luyện nghe không thuộc bài học này.");
+      throw new StorageError("VALIDATION_ERROR", "Câu luyện nghe không thuộc snapshot phiên này.");
     }
     return item;
+  }
+
+  private sourceStillExists(lesson: { items: ListeningItem[] }, item: ListeningItem): boolean {
+    return lesson.items.some(
+      (candidate) =>
+        candidate.sourceType === item.sourceType && candidate.sourceItemId === item.sourceItemId,
+    );
   }
 
   private revealItem(lessonId: string, sessionId: string, itemId: string) {
     const lesson = this.lesson(lessonId);
     const session = this.mutableSession(lessonId, sessionId);
     this.requireStep(session, ["check_meaning", "sentence_review"]);
-    const item = this.listeningItem(lesson, itemId);
+    const item = this.listeningItem(session, itemId);
     const revealed = new Set(JSON.parse(session.revealed_item_ids_json) as string[]);
     revealed.add(item.id);
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.database
+      const result = this.database
         .prepare(
-          "UPDATE listening_sessions SET revealed_item_ids_json=?,updated_at=? WHERE id=? AND status='active'",
+          `UPDATE listening_sessions SET revealed_item_ids_json=?,updated_at=?
+           WHERE id=? AND lesson_id=? AND status='active'`,
         )
-        .run(JSON.stringify([...revealed]), now, sessionId);
-      this.upsertItem(item, now, {
-        transcriptRevealed: true,
-        listenDelta: 0,
-        loopDelta: 0,
-      });
+        .run(JSON.stringify([...revealed]), now, sessionId, lessonId);
+      if (Number(result.changes) !== 1) {
+        throw new StorageError("CONFLICT", "Listening session changed before reveal was saved.");
+      }
+      if (this.sourceStillExists(lesson, item)) {
+        this.upsertItem(item, now, {
+          transcriptRevealed: true,
+          listenDelta: 0,
+          loopDelta: 0,
+        });
+      }
       assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
     } catch (error) {
@@ -484,24 +566,42 @@ export class ListeningService {
     return this.statusWithLesson(lesson, sessionId);
   }
 
-  private revealAll(lessonId: string, sessionId: string) {
+  private revealAll(lessonId: string, sessionId: string, itemIds: unknown) {
     const lesson = this.lesson(lessonId);
     const session = this.mutableSession(lessonId, sessionId);
     this.requireStep(session, ["check_meaning", "sentence_review"]);
+    const selectedItems = snapshotFromRow(session).selectedItems;
+    const selectedItemIds = selectedItems.map((item) => item.id);
+    if (
+      !Array.isArray(itemIds) ||
+      itemIds.length !== selectedItemIds.length ||
+      itemIds.some((itemId, index) => itemId !== selectedItemIds[index])
+    ) {
+      throw new StorageError(
+        "VALIDATION_ERROR",
+        "Reveal All must target the session's selected listening items in snapshot order.",
+      );
+    }
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.database
+      const result = this.database
         .prepare(
-          "UPDATE listening_sessions SET revealed_item_ids_json=?,updated_at=? WHERE id=? AND status='active'",
+          `UPDATE listening_sessions SET revealed_item_ids_json=?,updated_at=?
+           WHERE id=? AND lesson_id=? AND status='active'`,
         )
-        .run(JSON.stringify(lesson.items.map((item) => item.id)), now, sessionId);
-      for (const item of lesson.items) {
-        this.upsertItem(item, now, {
-          transcriptRevealed: true,
-          listenDelta: 0,
-          loopDelta: 0,
-        });
+        .run(JSON.stringify(selectedItemIds), now, sessionId, lessonId);
+      if (Number(result.changes) !== 1) {
+        throw new StorageError("CONFLICT", "Listening session changed before reveal was saved.");
+      }
+      for (const item of selectedItems) {
+        if (this.sourceStillExists(lesson, item)) {
+          this.upsertItem(item, now, {
+            transcriptRevealed: true,
+            listenDelta: 0,
+            loopDelta: 0,
+          });
+        }
       }
       assertBackupCapacity(this.database);
       this.database.exec("COMMIT");
@@ -529,20 +629,45 @@ export class ListeningService {
     const lesson = this.lesson(lessonId);
     const session = this.mutableSession(lessonId, sessionId);
     this.requireStep(session, ["check_meaning", "sentence_review"]);
-    const item = this.listeningItem(lesson, itemId);
+    const item = this.listeningItem(session, itemId);
     const now = new Date().toISOString();
-    this.writeWithinBackupCapacity(() => {
-      this.upsertItem(item, now, { listenDelta, loopDelta, transcriptRevealed: false });
-    });
+    if (this.sourceStillExists(lesson, item)) {
+      this.writeWithinBackupCapacity(() => {
+        this.upsertItem(item, now, {
+          listenDelta,
+          loopDelta,
+          transcriptRevealed: false,
+        });
+      });
+    }
     return this.statusWithLesson(lesson, sessionId);
   }
 
-  private setSavedForRelisten(lessonId: string, itemId: string, saved: unknown) {
+  private setSavedForRelisten(
+    lessonId: string,
+    itemId: string,
+    saved: unknown,
+    sessionId: unknown,
+  ) {
     if (typeof saved !== "boolean") {
       throw new StorageError("VALIDATION_ERROR", "Trạng thái lưu nghe lại không hợp lệ.");
     }
     const lesson = this.lesson(lessonId);
-    const item = this.listeningItem(lesson, itemId);
+    const item = saved
+      ? this.listeningItem(
+          this.mutableSession(
+            lessonId,
+            requiredString(sessionId, "Thiếu session ID khi lưu câu nghe lại."),
+          ),
+          itemId,
+        )
+      : lesson.items.find((candidate) => candidate.id === itemId);
+    if (!item) {
+      throw new StorageError("VALIDATION_ERROR", "Câu nghe lại không còn trong bài học hiện tại.");
+    }
+    if (!this.sourceStillExists(lesson, item)) {
+      throw new StorageError("VALIDATION_ERROR", "Câu nghe lại không còn trong bài học hiện tại.");
+    }
     const now = new Date().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
     try {

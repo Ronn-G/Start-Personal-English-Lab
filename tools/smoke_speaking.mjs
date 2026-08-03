@@ -168,7 +168,7 @@ try {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
   }
   if (!health) throw new Error(`server failed ${stderr}`);
-  if (health.schemaVersion !== 12) throw new Error("schema is not v12");
+  if (health.schemaVersion !== 13) throw new Error("schema is not v13");
 
   for (const currentLesson of [lesson, deletedLesson]) {
     const created = await jsonRequest("/api/storage/lessons", { lesson: currentLesson });

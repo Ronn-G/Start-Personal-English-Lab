@@ -1,5 +1,12 @@
 # Personal English Lab — AI handoff
 
+Listening Coherence and UI Testing Foundation raises SQLite to schema 13 while backup remains v2.
+Each Listening session owns an immutable, deterministic selection snapshot (at most eight items) and
+one track built from exactly those sentences. Lesson updates do not alter active sessions; stale
+sources cannot open Speaking or create Re-listen bookmarks; Practice Again uses current lesson
+content. Vitest + jsdom + Testing Library component tests run with `npm run test:components` alongside
+the Node runner; they are not browser E2E tests.
+
 Local Security and Dependency Hardening pins Next.js and `eslint-config-next` to 16.2.12, binds all
 supported launchers to `127.0.0.1`, validates local Host/Origin on mutations, streams bounded JSON
 bodies, and adds bounded process-local admission for Gemini and audio. Kokoro has no browser CORS,
@@ -43,7 +50,7 @@ và Node.js 24. Source of truth là repository này; không sửa artifact porta
 - `tools`: local smoke tests và tooling.
 - `test`: Node test suite.
 
-SQLite là nguồn dữ liệu chính. Database schema 12, lesson schema 1, progress schema 1 và backup
+SQLite là nguồn dữ liệu chính. Database schema 13, lesson schema 1, progress schema 1 và backup
 version 2. `localStorage` chỉ dùng cho migration legacy và theme. Không đổi schema, backup format,
 API contract hay persisted data nếu sprint không yêu cầu migration rõ ràng.
 

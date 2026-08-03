@@ -24,6 +24,7 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm test
+      - run: npm run test:components
       - run: npm run build
       - run: npm run smoke:storage
       - run: npm run smoke:backup

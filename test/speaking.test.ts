@@ -52,7 +52,13 @@ function makeLesson(title = "Speaking correctness test"): Lesson {
         ...(index === 0 ? { context: "I use this word in a real conversation." } : {}),
       }),
     ),
-    idiomsAndSlang: [item({ phrase: "keep going", meaning: "continue", vietnamese: "tiếp tục" })],
+    idiomsAndSlang: [
+      item({
+        phrase: "keep going",
+        meaning: "continue",
+        vietnamese: "tiếp tục",
+      }),
+    ],
     exampleSentences: Array.from({ length: 5 }, (_, index) =>
       item({
         sentence:
@@ -75,7 +81,11 @@ function makeLesson(title = "Speaking correctness test"): Lesson {
       shadowingPractice: {
         steps: ["Listen", "Repeat", "Record"],
         lines: [
-          item({ line: "I keep moving forward.", focus: "keep moving", vietnamese: "Dòng" }),
+          item({
+            line: "I keep moving forward.",
+            focus: "keep moving",
+            vietnamese: "Dòng",
+          }),
           item({
             line: "Small habits make English feel natural.",
             focus: "small habits",
@@ -96,7 +106,10 @@ function makeLesson(title = "Speaking correctness test"): Lesson {
           remixPrompt: "Remix",
         }),
       ),
-      reviewPlan: [1, 2, 4, 7].map((day) => ({ day: `Day ${day}`, task: "Review" })),
+      reviewPlan: [1, 2, 4, 7].map((day) => ({
+        day: `Day ${day}`,
+        task: "Review",
+      })),
       ankiCards: Array.from({ length: 5 }, () => item({ front: "Front", back: "Back" })),
     },
   };
@@ -203,7 +216,11 @@ test("speaking server owns transitions and rejects stale or wrong bindings", () 
       }),
     );
     expectConflict(() =>
-      call(service, { action: "complete_item", ...bind(advanced), rating: "easy" }),
+      call(service, {
+        action: "complete_item",
+        ...bind(advanced),
+        rating: "easy",
+      }),
     );
     assert.equal(call(service, { action: "status", lessonId: lesson.id }).session!.revision, 1);
   } finally {
@@ -242,7 +259,10 @@ test("duplicate reveal, advance, completion, and completed mutation never double
       .prepare(
         "SELECT help_count,show_answer_count FROM speaking_progress WHERE lesson_id=? AND practice_item_id=?",
       )
-      .get(lesson.id, target.id) as { help_count: number; show_answer_count: number };
+      .get(lesson.id, target.id) as {
+      help_count: number;
+      show_answer_count: number;
+    };
     assert.deepEqual({ ...afterReveal }, { help_count: 1, show_answer_count: 1 });
 
     state = toFinalStep(service, state);
@@ -254,7 +274,11 @@ test("duplicate reveal, advance, completion, and completed mutation never double
     });
     assert.equal(completed.session!.status, "completed");
     expectConflict(() =>
-      call(service, { action: "complete_item", ...completeBinding, rating: "hard" }),
+      call(service, {
+        action: "complete_item",
+        ...completeBinding,
+        rating: "hard",
+      }),
     );
     const progress = database
       .prepare(
@@ -286,11 +310,17 @@ test("start new is atomic and cancelled sessions are immutable", () => {
     );
     assert.throws(() => call(service, { action: "start_new", lessonId: lesson.id }));
     database.exec("DROP TRIGGER fail_speaking_insert");
-    const afterFailure = call(service, { action: "status", lessonId: lesson.id });
+    const afterFailure = call(service, {
+      action: "status",
+      lessonId: lesson.id,
+    });
     assert.equal(afterFailure.session!.id, active.session!.id);
     assert.equal(afterFailure.session!.status, "active");
 
-    const replacement = call(service, { action: "start_new", lessonId: lesson.id });
+    const replacement = call(service, {
+      action: "start_new",
+      lessonId: lesson.id,
+    });
     assert.notEqual(replacement.session!.id, active.session!.id);
     const oldStatus = database
       .prepare("SELECT status FROM speaking_sessions WHERE id=?")
@@ -450,7 +480,7 @@ test("full, targeted, review, and daily subsets preserve exactly one final Free 
   }
 });
 
-test("schema v12 migrates legacy speaking sessions with safe concurrency defaults", () => {
+test("schema v13 preserves migrated speaking sessions with safe concurrency defaults", () => {
   const database = new DatabaseSync(":memory:");
   try {
     assert.equal(
@@ -470,7 +500,7 @@ test("schema v12 migrates legacy speaking sessions with safe concurrency default
          ) VALUES(?,?,?,0,'read','active',?,?)`,
       )
       .run(randomUUID(), lesson.id, JSON.stringify([]), now, now);
-    assert.equal(runMigrations(database), 12);
+    assert.equal(runMigrations(database), 13);
     const row = database
       .prepare(
         "SELECT revision,revealed_item_ids_json,draft_versions_json,check_versions_json FROM speaking_sessions",
@@ -542,7 +572,10 @@ test("backup round trip preserves speaking concurrency state and merge never low
   const source = fixture();
   const target = openStorageDatabase(":memory:").database;
   try {
-    const full = call(source.service, { action: "start", lessonId: source.lesson.id });
+    const full = call(source.service, {
+      action: "start",
+      lessonId: source.lesson.id,
+    });
     const firstTask = full.tasks[0];
     let state = call(source.service, {
       action: "practice_item",

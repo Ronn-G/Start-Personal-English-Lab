@@ -1,5 +1,11 @@
 # Personal English Lab - Current Architecture Baseline
 
+> Listening Coherence and UI Testing Foundation: SQLite schema v13 persists an immutable, bounded
+> selected-sentence snapshot and coherent track for every Listening session. Active sessions survive
+> lesson edits; Practice Again uses current content; Reveal All is selected-only; backup v2 optionally
+> carries the snapshot and backfills older v2 imports. Vitest/jsdom/Testing Library component tests run
+> alongside Node tests and are not full-browser E2E coverage.
+
 > Local Security and Dependency Hardening: supported launchers bind Next.js/Kokoro to loopback;
 > mutations validate local Host and same Origin when present; JSON bodies and expensive local work
 > are bounded. Kokoro is Node-only with no CORS, strict canonical config and concurrency-one model

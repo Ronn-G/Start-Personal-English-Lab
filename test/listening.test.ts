@@ -7,11 +7,16 @@ import { DatabaseSync } from "node:sqlite";
 import { buildAudioPreparationRequest } from "../src/lib/audio-client";
 import {
   assertListeningTransition,
+  buildListeningTrack,
+  createListeningSessionSnapshot,
   extractListeningItems,
   getComprehensionRank,
   isComprehensionLevel,
+  isListeningSessionSnapshot,
   listeningItemId,
+  listeningTrackHash,
   mergeNonDecreasingCounter,
+  selectListeningSessionItems,
   selectSourceDiverseListeningItems,
 } from "../src/lib/listening-practice";
 import {
@@ -26,6 +31,7 @@ import {
   type ListeningSessionBackup,
 } from "../src/server/backup/backup";
 import { ListeningService } from "../src/server/listening/listening-service";
+import { SqliteStorageRepository } from "../src/server/storage/sqlite-repository";
 import {
   CURRENT_DATABASE_VERSION,
   MIGRATIONS,
@@ -49,7 +55,11 @@ function fixtureLesson(title = "Listening lesson", id: string = randomUUID()): L
         word: `word ${index}`,
         definition: "A useful word.",
         vietnamese: "từ",
-        ...(index < 2 ? { context: `I notice useful word ${index} when I listen carefully.` } : {}),
+        ...(index < 2
+          ? {
+              context: `I notice useful word ${index} when I listen carefully.`,
+            }
+          : {}),
       }),
     ),
     idiomsAndSlang: [
@@ -138,16 +148,24 @@ function insertLesson(database: DatabaseSync, lesson: Lesson): void {
 }
 
 interface TestListeningResponse {
+  track: string;
   session: {
     id: string;
     lessonId: string;
     status: string;
     currentStep: string;
+    revealedItemIds: string[];
+    selectedItemIds: string[];
+    trackHash: string;
+    lessonContentHash: string;
+    selectionVersion: number;
   } | null;
   items: Array<{
     id: string;
     sourceType: string;
     sourceItemId: string;
+    text: string;
+    sourceAvailable: boolean;
     progress: {
       listenCount: number;
       loopCount: number;
@@ -185,9 +203,24 @@ test("listening comprehension ranks and stable item IDs are strict and determini
     () => assertListeningTransition("first_listen", "sentence_review"),
     /Invalid listening transition/,
   );
+  const snapshot = createListeningSessionSnapshot(fixtureLesson());
+  assert.equal(isListeningSessionSnapshot(snapshot, snapshot.selectedItems[0].lessonId), true);
+  assert.equal(
+    isListeningSessionSnapshot(
+      {
+        ...snapshot,
+        selectedItems: [
+          { ...snapshot.selectedItems[0], targetPhrase: { unsafe: true } },
+          ...snapshot.selectedItems.slice(1),
+        ],
+      },
+      snapshot.selectedItems[0].lessonId,
+    ),
+    false,
+  );
 });
 
-test("schema v9 migrates through v12 without losing legacy listening data and rolls back", () => {
+test("schema v9 migrates through v13 without losing legacy listening data and rolls back", () => {
   const database = databaseAt(9);
   const lesson = fixtureLesson();
   insertLesson(database, lesson);
@@ -282,6 +315,92 @@ test("schema v9 migrates through v12 without losing legacy listening data and ro
   failing.close();
 });
 
+test("schema v13 backfills immutable snapshots for legacy active/completed sessions and rolls back", () => {
+  const lesson = fixtureLesson();
+  const expected = createListeningSessionSnapshot(lesson);
+  const allLegacyItemIds = extractListeningItems(lesson).map((item) => item.id);
+  assert.ok(allLegacyItemIds.length > expected.selectedItemIds.length);
+  const database = databaseAt(12);
+  insertLesson(database, lesson);
+  const insertLegacy = database.prepare(
+    `INSERT INTO listening_sessions(
+      id,lesson_id,status,current_step,started_at,updated_at,completed_at
+    ) VALUES(?,?,?,?,?,?,?)`,
+  );
+  const activeId = randomUUID();
+  const completedId = randomUUID();
+  insertLegacy.run(
+    activeId,
+    lesson.id,
+    "active",
+    "check_meaning",
+    lesson.createdAt,
+    lesson.updatedAt,
+    null,
+  );
+  database
+    .prepare("UPDATE listening_sessions SET revealed_item_ids_json=? WHERE id=?")
+    .run(JSON.stringify(allLegacyItemIds), activeId);
+  insertLegacy.run(
+    completedId,
+    lesson.id,
+    "completed",
+    "complete",
+    lesson.createdAt,
+    lesson.updatedAt,
+    lesson.updatedAt,
+  );
+  assert.equal(runMigrations(database), 13);
+  for (const id of [activeId, completedId]) {
+    const row = database
+      .prepare(
+        `SELECT revealed_item_ids_json,selected_item_ids_json,selected_items_json,listening_track,track_hash,
+                lesson_content_hash,selection_version
+         FROM listening_sessions WHERE id=?`,
+      )
+      .get(id) as Record<string, unknown>;
+    assert.deepEqual(JSON.parse(String(row.selected_item_ids_json)), expected.selectedItemIds);
+    assert.deepEqual(JSON.parse(String(row.selected_items_json)), expected.selectedItems);
+    assert.equal(row.listening_track, expected.track);
+    assert.equal(row.track_hash, expected.trackHash);
+    assert.equal(row.lesson_content_hash, expected.lessonContentHash);
+    assert.equal(row.selection_version, expected.selectionVersion);
+    assert.deepEqual(
+      JSON.parse(String(row.revealed_item_ids_json)),
+      id === activeId ? expected.selectedItemIds : [],
+    );
+  }
+  database.close();
+
+  const failing = databaseAt(12);
+  insertLesson(failing, lesson);
+  failing
+    .prepare(
+      `INSERT INTO listening_sessions(
+        id,lesson_id,status,current_step,started_at,updated_at
+      ) VALUES(?,?,'active','first_listen',?,?)`,
+    )
+    .run(randomUUID(), lesson.id, lesson.createdAt, lesson.updatedAt);
+  failing.exec(`
+    CREATE TRIGGER fail_listening_snapshot_backfill
+    BEFORE UPDATE ON listening_sessions
+    BEGIN
+      SELECT RAISE(ABORT,'forced snapshot backfill rollback');
+    END;
+  `);
+  assert.throws(() => runMigrations(failing), /immutable_listening_session_snapshot/);
+  assert.equal(
+    (failing.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+    12,
+  );
+  const columns = failing
+    .prepare("PRAGMA table_info(listening_sessions)")
+    .all()
+    .map((column) => (column as { name: string }).name);
+  assert.equal(columns.includes("selected_items_json"), false);
+  failing.close();
+});
+
 test("listening service creates, resumes, isolates, validates, completes, and practices again", () => {
   const database = databaseAt();
   const lesson = fixtureLesson();
@@ -343,7 +462,7 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
         sessionId,
         itemId: "li-not-a-real-item",
       }),
-    /không thuộc bài học/,
+    /không thuộc/,
   );
 
   state = execute(service, {
@@ -372,12 +491,16 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     .prepare(
       "SELECT recognition_status,difficult FROM listening_item_progress WHERE lesson_id=? AND id=?",
     )
-    .get(lesson.id, item.id) as { recognition_status: string; difficult: number };
+    .get(lesson.id, item.id) as {
+    recognition_status: string;
+    difficult: number;
+  };
   assert.equal(legacyAfterListening.recognition_status, "not_started");
   assert.equal(legacyAfterListening.difficult, 0);
   state = execute(service, {
     action: "set_saved_for_relisten",
     lessonId: lesson.id,
+    sessionId,
     itemId: item.id,
     saved: true,
   });
@@ -462,7 +585,10 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     /không được hỗ trợ/,
   );
 
-  const again = execute(service, { action: "practice_again", lessonId: lesson.id });
+  const again = execute(service, {
+    action: "practice_again",
+    lessonId: lesson.id,
+  });
   assert.notEqual(again.session?.id, sessionId);
   assert.equal(again.session?.currentStep, "first_listen");
   assert.equal(again.items[0].progress.listenCount, 4);
@@ -476,6 +602,160 @@ test("listening service creates, resumes, isolates, validates, completes, and pr
     2,
   );
   assert.equal(execute(service, { action: "status", lessonId: otherLesson.id }).session, null);
+  database.close();
+});
+
+test("listening session snapshot stays coherent across steps and lesson mutation", async () => {
+  const database = databaseAt();
+  const lesson = fixtureLesson();
+  insertLesson(database, lesson);
+  const service = new ListeningService(database);
+  const started = execute(service, { action: "start", lessonId: lesson.id });
+  const sessionId = started.session!.id;
+  const selectedIds = started.session!.selectedItemIds;
+  assert.deepEqual(
+    started.items.map((item) => item.id),
+    selectedIds,
+  );
+  assert.ok(selectedIds.length >= 4 && selectedIds.length <= 8);
+  assert.equal(new Set(selectedIds).size, selectedIds.length);
+  assert.equal(started.session!.selectionVersion, 1);
+  assert.equal(
+    started.session!.trackHash,
+    listeningTrackHash(started.items.map((item) => item.text).join(" ")),
+  );
+  assert.equal(
+    started.items.map((item) => item.text).join(" "),
+    (
+      service.execute({ action: "status", lessonId: lesson.id }) as {
+        track: string;
+      }
+    ).track,
+  );
+  assert.deepEqual(
+    new Set(started.items.map((item) => item.sourceType)),
+    new Set(["shadowing", "example", "sentence_mining", "vocabulary"]),
+  );
+  const outside = extractListeningItems(lesson).find((item) => !selectedIds.includes(item.id))!;
+  execute(service, {
+    action: "save_first_listen",
+    lessonId: lesson.id,
+    sessionId,
+    comprehension: "main_idea",
+  });
+  assert.throws(
+    () =>
+      execute(service, {
+        action: "reveal_item",
+        lessonId: lesson.id,
+        sessionId,
+        itemId: outside.id,
+      }),
+    /snapshot/,
+  );
+  assert.throws(
+    () =>
+      execute(service, {
+        action: "set_saved_for_relisten",
+        lessonId: lesson.id,
+        sessionId,
+        itemId: outside.id,
+        saved: true,
+      }),
+    /snapshot/,
+  );
+
+  const removed = started.items.find((item) => item.sourceType === "vocabulary")!;
+  execute(service, {
+    action: "reveal_item",
+    lessonId: lesson.id,
+    sessionId,
+    itemId: removed.id,
+  });
+  assert.ok(database.prepare("SELECT 1 FROM listening_item_progress WHERE id=?").get(removed.id));
+  const changed = structuredClone(lesson);
+  changed.updatedAt = new Date(Date.parse(lesson.updatedAt) + 1_000).toISOString();
+  if (removed.sourceType === "shadowing") {
+    changed.deepPractice.shadowingPractice.lines =
+      changed.deepPractice.shadowingPractice.lines.filter(
+        (item) => item.id !== removed.sourceItemId,
+      );
+  } else if (removed.sourceType === "example") {
+    changed.exampleSentences = changed.exampleSentences.filter(
+      (item) => item.id !== removed.sourceItemId,
+    );
+  } else if (removed.sourceType === "sentence_mining") {
+    changed.deepPractice.sentenceMining = changed.deepPractice.sentenceMining.filter(
+      (item) => item.id !== removed.sourceItemId,
+    );
+  } else {
+    changed.vocabulary = changed.vocabulary.map((item) =>
+      item.id === removed.sourceItemId ? { ...item, context: undefined } : item,
+    );
+  }
+  changed.exampleSentences[0].sentence = "A new lesson sentence for the next session.";
+  await new SqliteStorageRepository(database).updateLesson(lesson.id, { lesson: changed });
+  assert.equal(
+    database.prepare("SELECT 1 FROM listening_item_progress WHERE id=?").get(removed.id),
+    undefined,
+  );
+
+  let state = execute(service, { action: "status", lessonId: lesson.id });
+  assert.deepEqual(state.session!.selectedItemIds, selectedIds);
+  assert.deepEqual(
+    state.items.map((item) => item.text),
+    started.items.map((item) => item.text),
+  );
+  assert.equal(state.items.find((item) => item.id === removed.id)!.sourceAvailable, false);
+  state = execute(service, {
+    action: "reveal_all",
+    lessonId: lesson.id,
+    sessionId,
+    itemIds: selectedIds,
+  });
+  assert.deepEqual(new Set(state.session!.revealedItemIds), new Set(selectedIds));
+  const progressRows = database
+    .prepare("SELECT id FROM listening_item_progress WHERE lesson_id=?")
+    .all(lesson.id) as Array<{ id: string }>;
+  assert.equal(
+    progressRows.some((row) => row.id === removed.id),
+    false,
+  );
+  assert.ok(progressRows.every((row) => selectedIds.includes(row.id)));
+  state = execute(service, {
+    action: "advance_step",
+    lessonId: lesson.id,
+    sessionId,
+    nextStep: "second_listen",
+  });
+  state = execute(service, {
+    action: "save_second_listen",
+    lessonId: lesson.id,
+    sessionId,
+    comprehension: "most_of_it",
+  });
+  assert.deepEqual(state.session!.selectedItemIds, selectedIds);
+  assert.deepEqual(
+    state.items.map((item) => item.id),
+    selectedIds,
+  );
+  execute(service, {
+    action: "advance_step",
+    lessonId: lesson.id,
+    sessionId,
+    nextStep: "final_relisten",
+  });
+  execute(service, { action: "complete", lessonId: lesson.id, sessionId });
+  const again = execute(service, {
+    action: "practice_again",
+    lessonId: lesson.id,
+  });
+  assert.notEqual(again.session!.id, sessionId);
+  assert.notDeepEqual(again.session!.selectedItemIds, selectedIds);
+  assert.equal(
+    again.items.some((item) => item.text.includes("new lesson sentence")),
+    true,
+  );
   database.close();
 });
 
@@ -503,6 +783,7 @@ test("listening backup is optional, merges without lowering state, remaps confli
   state = execute(service, {
     action: "set_saved_for_relisten",
     lessonId: lesson.id,
+    sessionId,
     itemId: item.id,
     saved: true,
   });
@@ -528,13 +809,74 @@ test("listening backup is optional, merges without lowering state, remaps confli
   };
   const legacy = {
     ...legacyPayload,
-    integrity: { algorithm: "SHA-256" as const, checksum: checksum(legacyPayload) },
+    integrity: {
+      algorithm: "SHA-256" as const,
+      checksum: checksum(legacyPayload),
+    },
   } as BackupDocument;
   assert.equal(validateBackup(legacy).diagnostics.length, 0);
 
   const currentPayload = Object.fromEntries(
     Object.entries(backup).filter(([key]) => key !== "integrity"),
   ) as Omit<BackupDocument, "integrity">;
+  const exportedSnapshot = backup.listeningSessions![0];
+  assert.deepEqual(exportedSnapshot.selectedItemIds, state.session!.selectedItemIds);
+  assert.equal(exportedSnapshot.track, state.track);
+  assert.equal(exportedSnapshot.trackHash, state.session!.trackHash);
+  assert.equal(exportedSnapshot.selectionVersion, 1);
+
+  const roundTripTarget = databaseAt();
+  importBackup(roundTripTarget, backup, "replace");
+  const roundTripSession = exportBackup(roundTripTarget, "0.1.0").listeningSessions![0];
+  assert.deepEqual(roundTripSession.selectedItemIds, exportedSnapshot.selectedItemIds);
+  assert.deepEqual(roundTripSession.selectedItems, exportedSnapshot.selectedItems);
+  assert.equal(roundTripSession.track, exportedSnapshot.track);
+  assert.equal(roundTripSession.trackHash, exportedSnapshot.trackHash);
+
+  const legacySession: ListeningSessionBackup = { ...exportedSnapshot };
+  delete legacySession.selectedItemIds;
+  delete legacySession.selectedItems;
+  delete legacySession.track;
+  delete legacySession.trackHash;
+  delete legacySession.lessonContentHash;
+  delete legacySession.selectionVersion;
+  const legacySessionPayload = {
+    ...currentPayload,
+    listeningSessions: [legacySession],
+  };
+  const legacySessionBackup = {
+    ...legacySessionPayload,
+    integrity: {
+      algorithm: "SHA-256" as const,
+      checksum: checksum(legacySessionPayload),
+    },
+  } as BackupDocument;
+  assert.equal(validateBackup(legacySessionBackup).diagnostics.length, 0);
+  const legacySessionTarget = databaseAt();
+  importBackup(legacySessionTarget, legacySessionBackup, "replace");
+  const backfilled = exportBackup(legacySessionTarget, "0.1.0").listeningSessions![0];
+  assert.deepEqual(backfilled.selectedItemIds, exportedSnapshot.selectedItemIds);
+  assert.equal(backfilled.track, exportedSnapshot.track);
+
+  const invalidSnapshotPayload = {
+    ...currentPayload,
+    listeningSessions: [{ ...exportedSnapshot, track: `${exportedSnapshot.track} changed` }],
+  };
+  const invalidSnapshotBackup = {
+    ...invalidSnapshotPayload,
+    integrity: {
+      algorithm: "SHA-256" as const,
+      checksum: checksum(invalidSnapshotPayload),
+    },
+  } as BackupDocument;
+  const invalidSnapshot = validateBackup(invalidSnapshotBackup);
+  assert.ok(
+    invalidSnapshot.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.code === "INVALID_LISTENING_SNAPSHOT" &&
+        diagnostic.path === "$.listeningSessions[0].selectedItems",
+    ),
+  );
   const oldListeningProgress: ListeningItemProgressBackup = {
     ...backup.listeningItemProgress![0],
   };
@@ -598,7 +940,11 @@ test("listening backup is optional, merges without lowering state, remaps confli
   importBackup(conflictTarget, backup, "merge");
   const importedListening = conflictTarget
     .prepare("SELECT lesson_id,source_item_id,saved_for_relisten FROM listening_item_progress")
-    .all() as Array<{ lesson_id: string; source_item_id: string; saved_for_relisten: number }>;
+    .all() as Array<{
+    lesson_id: string;
+    source_item_id: string;
+    saved_for_relisten: number;
+  }>;
   assert.equal(importedListening.length, 1);
   assert.notEqual(importedListening[0].lesson_id, lesson.id);
   assert.equal(importedListening[0].source_item_id, item.sourceItemId);
@@ -618,6 +964,8 @@ test("listening backup is optional, merges without lowering state, remaps confli
   assert.ok(replaceTarget.prepare("SELECT 1 FROM lessons WHERE id=?").get(retainedLesson.id));
 
   source.close();
+  roundTripTarget.close();
+  legacySessionTarget.close();
   oldListeningTarget.close();
   conflictTarget.close();
   replaceTarget.close();
@@ -656,6 +1004,7 @@ test("re-listen bookmarks persist independently for all source types and roll ba
     state = execute(service, {
       action: "set_saved_for_relisten",
       lessonId: lesson.id,
+      sessionId,
       itemId: item.id,
       saved: true,
     });
@@ -687,10 +1036,11 @@ test("re-listen bookmarks persist independently for all source types and roll ba
       execute(service, {
         action: "set_saved_for_relisten",
         lessonId: otherLesson.id,
+        sessionId,
         itemId: selected[0].id,
         saved: true,
       }),
-    /không thuộc bài học/,
+    /không tìm thấy|không thuộc|không còn/i,
   );
 
   state = execute(service, {
@@ -722,9 +1072,10 @@ test("re-listen bookmarks persist independently for all source types and roll ba
       }),
     /forced item action rollback/,
   );
-  const afterRollback = execute(service, { action: "status", lessonId: lesson.id }).items.find(
-    (candidate) => candidate.id === rollbackItem.id,
-  )!.progress;
+  const afterRollback = execute(service, {
+    action: "status",
+    lessonId: lesson.id,
+  }).items.find((candidate) => candidate.id === rollbackItem.id)!.progress;
   assert.equal(afterRollback.listenCount, 1);
   assert.equal(afterRollback.savedForRelisten, true);
   assert.equal(execute(service, { action: "status", lessonId: otherLesson.id }).session, null);
@@ -785,6 +1136,18 @@ test("extractListeningItems validates source identity and produces a bounded pra
     new Set(["shadowing", "example", "sentence_mining", "vocabulary"]),
   );
   assert.equal(new Set(review.map((item) => item.id)).size, review.length);
+  const selected = selectListeningSessionItems(items);
+  const track = buildListeningTrack(selected);
+  assert.ok(selected.length <= 8);
+  assert.equal(
+    new Set(selected.map((item) => `${item.sourceType}|${item.sourceItemId}`)).size,
+    selected.length,
+  );
+  assert.equal(new Set(selected.map((item) => item.text.toLowerCase())).size, selected.length);
+  assert.ok(selected.every((item) => track.includes(item.text)));
+  assert.ok(track.length <= 650);
+  assert.ok(new TextEncoder().encode(track).byteLength <= 2_600);
+  assert.deepEqual(selectListeningSessionItems(items), selected);
 });
 
 test("Check Meaning and Sentence Review use the same canonical audio request", () => {
@@ -805,22 +1168,24 @@ test("Check Meaning and Sentence Review use the same canonical audio request", (
 
 test("listening UI removes sentence assessments and keeps objective practice actions", () => {
   const listeningUi = readFileSync("src/components/ListeningPractice.tsx", "utf8");
+  const audioControlsUi = readFileSync("src/components/listening/AudioControls.tsx", "utf8");
   const lessonUi = readFileSync("src/components/LessonDisplay.tsx", "utf8");
   const dashboardUi = readFileSync("src/components/LessonGenerator.tsx", "utf8");
+  const relistenUi = readFileSync("src/components/listening/RelistenDashboard.tsx", "utf8");
   assert.match(listeningUi, /Transcript hidden/);
   assert.match(listeningUi, /Reveal sentence/);
   assert.match(listeningUi, /How much did you understand/);
-  assert.match(listeningUi, /: "Play"/);
-  assert.match(listeningUi, /Loop 3/);
-  assert.match(listeningUi, /Loop 5/);
-  assert.match(listeningUi, />\s*Stop\s*</);
+  assert.match(audioControlsUi, /: "Play"/);
+  assert.match(audioControlsUi, /Loop \{count\}/);
+  assert.match(audioControlsUi, />\s*Stop\s*</);
   assert.match(listeningUi, /Audio First review/);
-  assert.match(listeningUi, /Preparing Kokoro audio/);
-  assert.match(listeningUi, /Kokoro audio ready/);
-  assert.match(listeningUi, /Using browser voice/);
-  assert.match(listeningUi, /Audio failed/);
-  assert.match(listeningUi, /Retry Kokoro/);
+  assert.match(audioControlsUi, /Preparing Kokoro audio/);
+  assert.match(audioControlsUi, /Kokoro audio ready/);
+  assert.match(audioControlsUi, /Using browser voice/);
+  assert.match(audioControlsUi, /Audio failed/);
+  assert.match(audioControlsUi, /Retry Kokoro/);
   assert.equal((listeningUi.match(/<ListeningAudioControls/g) ?? []).length, 2);
+  assert.match(listeningUi, /itemIds: items\.map/);
   assert.match(listeningUi, /Practice this sentence/);
   assert.match(listeningUi, /Save for re-listen/);
   assert.match(listeningUi, /Remove from re-listen/);
@@ -833,9 +1198,9 @@ test("listening UI removes sentence assessments and keeps objective practice act
   assert.match(listeningUi, /Practice Again/);
   assert.match(lessonUi, /Continue Listening Practice/);
   assert.match(dashboardUi, /Continue Listening/);
-  assert.match(dashboardUi, /Re-listen/);
-  assert.match(dashboardUi, /Sentences you explicitly saved for later/);
-  assert.match(dashboardUi, /Open lesson/);
-  assert.match(dashboardUi, /Remove from re-listen/);
+  assert.match(relistenUi, /Re-listen/);
+  assert.match(relistenUi, /Sentences you explicitly saved for later/);
+  assert.match(relistenUi, /Open lesson/);
+  assert.match(relistenUi, /Remove from re-listen/);
   assert.doesNotMatch(dashboardUi, /difficult sentence/i);
 });

@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import { createListeningSessionSnapshot } from "../../lib/listening-practice";
 import { migrateLegacyProgress, normalizeLessonProgress } from "../../lib/lesson-progress";
 import { normalizeLesson } from "../../lib/lesson-schema";
+import type { Lesson } from "../../types/lesson";
 
 import { StorageError } from "./errors";
 
@@ -10,7 +12,7 @@ export interface Migration {
   up(database: DatabaseSync): void;
 }
 
-export const CURRENT_DATABASE_VERSION = 12;
+export const CURRENT_DATABASE_VERSION = 13;
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -422,6 +424,76 @@ export const MIGRATIONS: readonly Migration[] = [
         CREATE INDEX speaking_session_revision_idx
           ON speaking_sessions(id,lesson_id,status,current_item_index,current_step,revision);
       `);
+    },
+  },
+  {
+    version: 13,
+    name: "immutable_listening_session_snapshot",
+    up(database) {
+      database.exec(`
+        ALTER TABLE listening_sessions
+          ADD COLUMN selected_item_ids_json TEXT NOT NULL DEFAULT '[]'
+          CHECK(
+            json_valid(selected_item_ids_json) AND
+            json_type(selected_item_ids_json) = 'array' AND
+            length(selected_item_ids_json) <= 5000
+          );
+        ALTER TABLE listening_sessions
+          ADD COLUMN selected_items_json TEXT NOT NULL DEFAULT '[]'
+          CHECK(
+            json_valid(selected_items_json) AND
+            json_type(selected_items_json) = 'array' AND
+            length(selected_items_json) <= 40000
+          );
+        ALTER TABLE listening_sessions
+          ADD COLUMN listening_track TEXT NOT NULL DEFAULT '' CHECK(length(listening_track) <= 650);
+        ALTER TABLE listening_sessions
+          ADD COLUMN track_hash TEXT NOT NULL DEFAULT '' CHECK(length(track_hash) IN (0,24));
+        ALTER TABLE listening_sessions
+          ADD COLUMN lesson_content_hash TEXT NOT NULL DEFAULT ''
+          CHECK(length(lesson_content_hash) IN (0,24));
+        ALTER TABLE listening_sessions
+          ADD COLUMN selection_version INTEGER NOT NULL DEFAULT 0
+          CHECK(selection_version BETWEEN 0 AND 100);
+      `);
+      const rows = database
+        .prepare(
+          `SELECT s.id,s.revealed_item_ids_json,l.lesson_json
+           FROM listening_sessions s
+           JOIN lessons l ON l.id=s.lesson_id`,
+        )
+        .all() as Array<{
+        id: string;
+        revealed_item_ids_json: string;
+        lesson_json: string;
+      }>;
+      const update = database.prepare(
+        `UPDATE listening_sessions
+         SET revealed_item_ids_json=?,selected_item_ids_json=?,selected_items_json=?,
+             listening_track=?,track_hash=?,
+             lesson_content_hash=?,selection_version=?
+         WHERE id=?`,
+      );
+      for (const row of rows) {
+        const snapshot = createListeningSessionSnapshot(JSON.parse(row.lesson_json) as Lesson);
+        const legacyRevealedIds = new Set(JSON.parse(row.revealed_item_ids_json) as unknown[]);
+        const revealedIds = snapshot.selectedItemIds.filter((itemId) =>
+          legacyRevealedIds.has(itemId),
+        );
+        const result = update.run(
+          JSON.stringify(revealedIds),
+          JSON.stringify(snapshot.selectedItemIds),
+          JSON.stringify(snapshot.selectedItems),
+          snapshot.track,
+          snapshot.trackHash,
+          snapshot.lessonContentHash,
+          snapshot.selectionVersion,
+          row.id,
+        );
+        if (Number(result.changes) !== 1) {
+          throw new Error(`Listening snapshot backfill failed for ${row.id}.`);
+        }
+      }
     },
   },
 ];

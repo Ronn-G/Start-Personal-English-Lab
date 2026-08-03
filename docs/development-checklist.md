@@ -19,6 +19,7 @@
 npm run format:check
 npm run lint
 npm test
+npm run test:components
 npm run smoke:storage
 npm run smoke:backup
 npm run smoke:audio
@@ -38,6 +39,12 @@ Khi sửa listening, phải kiểm tra: transcript ẩn mặc định; First/Sec
 resume đúng step; reveal từng câu/reveal all; loop 3/5 dừng và không request audio trùng; stable source
 item; completed session không bị mutate; Practice Again giữ aggregate; lesson isolation; dashboard
 Continue/Re-listen; Speaking Ladder giữ progress riêng; backup cũ, Merge, Replace và conflict remap.
+
+Listening session tests must also verify one immutable, bounded, unique, source-diverse selected set;
+the exact same IDs/track across Check Meaning, Reveal All, Sentence Review, Final Re-listen, and
+reload; deterministic v12 backfill/rollback; old-v2 backup import; lesson mutation isolation; stale
+source behavior; and Practice Again from current lesson content. Run jsdom component tests in addition
+to Node/service tests, and describe them as component tests rather than browser E2E coverage.
 
 Để kiểm tra audio development, cấu hình Kokoro một lần trong `.env.local`, chạy
 `npm run dev:full`, rồi xác nhận `/health`, port 5050, Kokoro playback, browser fallback và khả

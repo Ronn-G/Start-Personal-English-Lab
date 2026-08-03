@@ -1,7 +1,11 @@
 import { extractPracticeCandidates } from "./speaking-practice";
+import { AUDIO_MAX_TEXT_BYTES, AUDIO_MAX_TEXT_CHARS } from "./audio-domain";
 import type { Lesson } from "../types/lesson";
 
 export const LISTENING_NORMALIZATION_VERSION = 1;
+export const LISTENING_SELECTION_VERSION = 1;
+export const MAX_LISTENING_SESSION_ITEMS = 8;
+export const MAX_LISTENING_SNAPSHOT_JSON_CHARS = 40_000;
 export const LISTENING_STEPS = [
   "first_listen",
   "check_meaning",
@@ -37,6 +41,19 @@ export interface ListeningItem {
   speakingPracticeItemId?: string;
 }
 
+export interface ListeningSessionSnapshot {
+  selectedItems: ListeningItem[];
+  selectedItemIds: string[];
+  track: string;
+  trackHash: string;
+  lessonContentHash: string;
+  selectionVersion: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const comprehensionRank: Record<ComprehensionLevel, number> = {
   mostly_lost: 0,
   some_parts: 1,
@@ -66,7 +83,7 @@ function normalizeListeningText(value: string): string {
     .trim();
 }
 
-function hashStable(input: string): string {
+export function hashStable(input: string): string {
   let first = 2166136261;
   let second = 2246822519;
   let third = 3266489917;
@@ -79,6 +96,14 @@ function hashStable(input: string): string {
   return [first, second, third]
     .map((value) => (value >>> 0).toString(16).padStart(8, "0"))
     .join("");
+}
+
+export function listeningTrackHash(track: string): string {
+  return hashStable(`track|${LISTENING_SELECTION_VERSION}|${track}`);
+}
+
+export function listeningLessonContentHash(lesson: Lesson): string {
+  return hashStable(`lesson|${JSON.stringify(lesson)}`);
 }
 
 export function listeningItemId(
@@ -181,15 +206,136 @@ export function selectSourceDiverseListeningItems<
   return selected;
 }
 
-export function buildListeningTrack(items: ListeningItem[], maximumLength = 620): string {
-  let track = "";
-  for (const item of items) {
-    const candidate = track ? `${track} ${item.text}` : item.text;
-    if (candidate.length > maximumLength) break;
-    track = candidate;
-    if (track.length >= 280) break;
+function audioTrackFits(items: ListeningItem[]): boolean {
+  const track = items.map((item) => item.text).join(" ");
+  return (
+    track.length <= AUDIO_MAX_TEXT_CHARS &&
+    new TextEncoder().encode(track).byteLength <= AUDIO_MAX_TEXT_BYTES
+  );
+}
+
+export function selectListeningSessionItems(
+  rankedItems: ListeningItem[],
+  limit = MAX_LISTENING_SESSION_ITEMS,
+): ListeningItem[] {
+  if (!Number.isInteger(limit) || limit < 1) return [];
+  const ordered = selectSourceDiverseListeningItems(rankedItems, rankedItems.length);
+  const selected: ListeningItem[] = [];
+  const ids = new Set<string>();
+  const identities = new Set<string>();
+  const texts = new Set<string>();
+  for (const item of ordered) {
+    if (selected.length >= Math.min(limit, MAX_LISTENING_SESSION_ITEMS)) break;
+    const identity = `${item.sourceType}|${item.sourceItemId}`;
+    const normalizedText = item.text.trim().toLocaleLowerCase("en-US");
+    if (
+      !item.id ||
+      !item.sourceItemId ||
+      !normalizedText ||
+      ids.has(item.id) ||
+      identities.has(identity) ||
+      texts.has(normalizedText) ||
+      !audioTrackFits([...selected, item])
+    ) {
+      continue;
+    }
+    selected.push(item);
+    ids.add(item.id);
+    identities.add(identity);
+    texts.add(normalizedText);
+  }
+  return selected;
+}
+
+export function buildListeningTrack(items: ListeningItem[]): string {
+  const track = items.map((item) => item.text).join(" ");
+  if (
+    track.length > AUDIO_MAX_TEXT_CHARS ||
+    new TextEncoder().encode(track).byteLength > AUDIO_MAX_TEXT_BYTES
+  ) {
+    throw new Error("Listening track exceeds the canonical audio limit.");
   }
   return track;
+}
+
+export function createListeningSessionSnapshot(lesson: Lesson): ListeningSessionSnapshot {
+  const selectedItems = selectListeningSessionItems(extractListeningItems(lesson));
+  const track = buildListeningTrack(selectedItems);
+  return {
+    selectedItems,
+    selectedItemIds: selectedItems.map((item) => item.id),
+    track,
+    trackHash: listeningTrackHash(track),
+    lessonContentHash: listeningLessonContentHash(lesson),
+    selectionVersion: LISTENING_SELECTION_VERSION,
+  };
+}
+
+export function isListeningSessionSnapshot(
+  value: unknown,
+  expectedLessonId?: string,
+): value is ListeningSessionSnapshot {
+  if (!isRecord(value)) return false;
+  const selectedItemIds = value.selectedItemIds;
+  const selectedItems = value.selectedItems;
+  if (
+    value.selectionVersion !== LISTENING_SELECTION_VERSION ||
+    !Array.isArray(selectedItemIds) ||
+    !Array.isArray(selectedItems) ||
+    selectedItems.length < 1 ||
+    selectedItems.length > MAX_LISTENING_SESSION_ITEMS ||
+    selectedItemIds.length !== selectedItems.length ||
+    typeof value.track !== "string" ||
+    typeof value.trackHash !== "string" ||
+    typeof value.lessonContentHash !== "string" ||
+    !/^[0-9a-f]{24}$/.test(value.lessonContentHash) ||
+    JSON.stringify(selectedItems).length > MAX_LISTENING_SNAPSHOT_JSON_CHARS
+  ) {
+    return false;
+  }
+  const ids = new Set<string>();
+  const identities = new Set<string>();
+  const texts = new Set<string>();
+  for (let index = 0; index < selectedItems.length; index += 1) {
+    const item = selectedItems[index];
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "string" ||
+      selectedItemIds[index] !== item.id ||
+      typeof item.lessonId !== "string" ||
+      (expectedLessonId !== undefined && item.lessonId !== expectedLessonId) ||
+      !["shadowing", "example", "sentence_mining", "vocabulary"].includes(
+        String(item.sourceType),
+      ) ||
+      typeof item.sourceItemId !== "string" ||
+      !item.sourceItemId ||
+      typeof item.text !== "string" ||
+      !item.text.trim() ||
+      item.text.length > AUDIO_MAX_TEXT_CHARS ||
+      new TextEncoder().encode(item.text).byteLength > AUDIO_MAX_TEXT_BYTES ||
+      (["targetPhrase", "meaning", "sourceContext", "speakingPracticeItemId"] as const).some(
+        (field) => item[field] !== undefined && typeof item[field] !== "string",
+      ) ||
+      item.id !==
+        listeningItemId(item.lessonId, item.sourceType as ListeningSourceType, item.sourceItemId)
+    ) {
+      return false;
+    }
+    const identity = `${item.sourceType}|${item.sourceItemId}`;
+    const normalizedText = item.text.toLocaleLowerCase("en-US");
+    if (ids.has(item.id) || identities.has(identity) || texts.has(normalizedText)) return false;
+    ids.add(item.id);
+    identities.add(identity);
+    texts.add(normalizedText);
+  }
+  try {
+    return (
+      buildListeningTrack(selectedItems as unknown as ListeningItem[]) === value.track &&
+      listeningTrackHash(value.track) === value.trackHash
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function buildListeningTrackFromTranscript(
@@ -198,7 +344,10 @@ export function buildListeningTrackFromTranscript(
   maximumLength = 620,
 ): string {
   const normalized = transcript?.replace(/\s+/g, " ").trim();
-  if (!normalized) return buildListeningTrack(fallbackItems, maximumLength);
+  if (!normalized) {
+    const selected = selectListeningSessionItems(fallbackItems);
+    return buildListeningTrack(selected);
+  }
   const sentences = normalized.split(/(?<=[.!?])\s+/);
   let track = "";
   for (const sentence of sentences) {

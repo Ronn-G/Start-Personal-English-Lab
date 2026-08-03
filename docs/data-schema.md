@@ -1,6 +1,6 @@
 # Data schemas
 
-Four independent integer versions exist: SQLite database **12** (`PRAGMA user_version`), backup
+Four independent integer versions exist: SQLite database **13** (`PRAGMA user_version`), backup
 format **2** (`CURRENT_BACKUP_VERSION`), Lesson document **1**
 (`CURRENT_LESSON_SCHEMA_VERSION`), and Lesson progress **1**
 (`CURRENT_PROGRESS_SCHEMA_VERSION`). Backup v1 remains readable for recovery compatibility.
@@ -104,6 +104,26 @@ explicit bookmark. Existing `recognition_status`, `difficult` and
 `listening_sessions.final_relisten_rating` columns remain for database and backup compatibility but
 are legacy/currently unused. Backup v1 exports `savedForRelisten` as an optional field. Import treats
 its absence in older backups as `false`; merge preserves an explicitly newer bookmark value.
+
+## Listening coherence snapshot (schema v13)
+
+Schema v13 uses transactional `ALTER TABLE` statements to extend `listening_sessions` with bounded
+`selected_item_ids_json`, `selected_items_json`, `listening_track`, `track_hash`,
+`lesson_content_hash`, and `selection_version` columns. CHECK constraints cap JSON/track/hash sizes
+and versions. The migration deterministically backfills active and completed v12 rows from their
+stored lesson JSON. Legacy reveal IDs are intersected with the selected snapshot in canonical
+snapshot order, so a historical Reveal All cannot leave hidden IDs in the migrated session. Any
+invalid lesson or failed backfill rolls the migration back to v12.
+
+The selected item objects contain stable lesson/source identity plus the exact text/context required
+to finish an active session after a lesson edit. They do not duplicate the whole Lesson document.
+The ordered track is exactly the selected text joined with punctuation preserved. Source availability
+is resolved separately against the current lesson and never mutates the snapshot.
+
+Backup format remains v2. The snapshot extension is optional when validating an older v2 document;
+import deterministically backfills absent fields. Export and Replace preserve it exactly. Merge remaps
+lesson/listening IDs while preserving ordered text/track semantics. Partial or inconsistent snapshots
+are rejected at the snapshot JSON path.
 
 # Backup v2 and Speaking integrity (Sprint: Backup Integrity v2)
 

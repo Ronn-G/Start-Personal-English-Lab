@@ -1,5 +1,20 @@
 # Backup and restore
 
+## Listening snapshot extension
+
+Backup v2 now optionally includes each Listening session's ordered selected IDs/items, coherent track,
+track hash, lesson-content hash, and selection version. This is a backward-compatible v2 extension:
+old v2 files without the fields are deterministically backfilled from their included lesson during
+import. Replace preserves the snapshot exactly. Merge remaps lesson and listening identities while
+preserving the ordered snapshot content. A partial, oversized, mismatched, or invalid snapshot is
+rejected with an `INVALID_LISTENING_SNAPSHOT` diagnostic at the snapshot JSON path before writes.
+Snapshot item text/context fields must remain strings; malformed renderable content is rejected
+before it can reach the Listening UI.
+
+Audio cache/WAV data remain excluded. A source removed from the current lesson remains in an active
+session snapshot so the session can finish, while stale aggregate progress/bookmarks are not restored
+as live dashboard items.
+
 Personal English Lab exports canonical UTF-8 JSON with
 `backupFormat: "personal-english-lab"` and `backupVersion: 2`. Backup version is independent from
 the app version, SQLite schema (v12), Lesson schema (v1), and Progress schema (v1).

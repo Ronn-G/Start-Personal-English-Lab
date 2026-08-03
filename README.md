@@ -47,7 +47,7 @@ không được báo thành công giả.
 ## Dữ liệu, backup và audio
 
 SQLite trong data directory là nguồn dữ liệu chính. `localStorage` chỉ còn phục vụ migration dữ
-liệu cũ và theme. Database schema hiện là 12; lesson schema và progress schema là 1. Xóa lesson là
+liệu cũ và theme. Database schema hiện là 13; lesson schema và progress schema là 1. Xóa lesson là
 soft delete.
 
 Backup version 2 hỗ trợ Merge và Replace, có SHA-256 checksum, gồm lesson, source/transcript,
@@ -82,6 +82,7 @@ ghi gần nhất mỗi lesson. Các trạng thái này được phục hồi khi
 npm run format:check
 npm run lint
 npm test
+npm run test:components
 npm run smoke:storage
 npm run smoke:backup
 npm run smoke:audio

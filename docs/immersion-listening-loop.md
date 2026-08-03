@@ -8,6 +8,21 @@ The user starts or resumes one active listening session per lesson. Practice Aga
 unfinished active session, creates a new session, and keeps completed session history plus aggregate
 sentence counters. Listening completion never changes Speaking Ladder completion.
 
+## Immutable session snapshot
+
+Schema v13 snapshots one deterministic, source-diverse set of at most eight valid, unique sentences
+when a session starts. The row stores the ordered selected IDs, the selected source identities and
+text/context, the joined track, a track hash, a lesson-content hash, and selection algorithm version
+
+1. Check Meaning, Reveal All, Sentence Review, and all three central listens use that same snapshot.
+   Display indexes are never persisted identities.
+
+An active session is intentionally insulated from later lesson edits. Removed source text remains
+playable from the snapshot, but Speaking and Re-listen actions are disabled when the current lesson
+can no longer resolve that source. Updating a lesson transactionally prunes stale aggregate progress
+and bookmarks without mutating active session rows. Practice Again creates a fresh snapshot from the
+current lesson.
+
 ## Content and audio
 
 Lesson v1 does not have stable transcript-segment records. Listening v1 therefore derives practice
@@ -15,9 +30,9 @@ items from existing stable UUIDs in shadowing lines, example sentences, sentence
 vocabulary contexts. The stable listening ID contains normalization version 1, lesson UUID, source
 type and source item UUID. Display order and timestamps are not part of identity.
 
-If a stored lesson has source transcript metadata, First/Second/Final Listen use a bounded excerpt;
-older lessons fall back to a bounded track built from the stable practice sentences. Both are clearly
-labelled **Kokoro practice audio** and are not presented as original YouTube audio. Sentence playback
+First/Second/Final Listen use exactly the selected sentences, in snapshot order, joined without
+changing their punctuation. Selection stops before the canonical audio text/UTF-8 limits. The track
+is labelled **Kokoro practice audio** and is not presented as original YouTube audio. Sentence playback
 in Check Meaning and Sentence Review uses one shared controller and one shared control component.
 Both paths use the same normalized text, voice, speed, language, model, cache key, prepare request,
 queue and retry behavior. Play and loop 3/5 prepare one cached URL and reuse the same resolved source
@@ -32,6 +47,12 @@ of being treated as a Kokoro provider failure. No audio starts without a user ac
 Transcript reveal is session-scoped in `revealed_item_ids_json`, so reload resumes reveals but
 Practice Again starts hidden. `listening_item_progress.transcript_revealed` is an aggregate history
 flag for backup and review; it does not force a new session to reveal content.
+
+Reveal All requires the ordered selected IDs from the client and validates them against the persisted
+snapshot. It reveals only those IDs, creates no progress for hidden extracted items, and never changes
+listen counts or bookmarks. Individual reveals likewise resolve only through the active snapshot.
+Saving a sentence for Re-listen also requires active snapshot membership; dashboard removal is
+allowed without an active session so a saved bookmark can always be cleared.
 
 ## Commands and rules
 
@@ -61,13 +82,22 @@ SQLite and does not trust client-provided source identity.
 - “Practice this sentence” resolves the same source item in Speaking Ladder and retains its stable
   speaking progress.
 
-## Manual check
+## Component tests and manual check
 
-Open an old lesson, start listening, confirm the transcript is hidden, save First Listen, reveal one
-sentence, play and loop it, reload and continue, then complete Second Listen and Final Re-listen.
+`npm run test:components` runs Vitest 4 with jsdom and Testing Library alongside the existing Node
+test suite. It covers the five-step flow, snapshot reuse/resume, lesson mutation, Practice Again,
+duplicate/conflict interaction handling, bookmark behavior, audio states/cleanup, and dashboard
+actions. These are component tests, not full-browser E2E tests.
+
+Use a temporary database and a production build. Open a lesson with more than eight eligible items,
+start listening, record the selected IDs/track, confirm the transcript is hidden, save First Listen,
+reveal one and Reveal All, reload and continue, then complete Second Listen and Final Re-listen.
+Confirm the same IDs and track throughout. Edit the lesson mid-session, verify the old snapshot still
+finishes safely, then confirm Practice Again uses the updated lesson.
 Exercise shadowing, example, sentence-mining and vocabulary-context items. Confirm every Play shows
 preparing, Kokoro ready/playing, browser fallback or failed; force a Kokoro failure and verify the
 visible browser status and Kokoro-only retry. Save and remove a sentence, reload, verify Re-listen
 and lesson isolation, and open the matching Speaking Ladder item. Export/import both a current
 backup and a legacy backup without `savedForRelisten`; listening and speaking must remain separate.
-Check the browser console and confirm no audio plays automatically.
+Complete the flow by keyboard at desktop and 375 px widths, check visible focus/status announcements
+and long-text wrapping, inspect the console, and confirm no audio plays automatically.
